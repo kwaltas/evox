@@ -668,8 +668,8 @@ mod roster_tests {
             Path::new("..")
         };
         assert!(
-            r.join("assets/extracted/evo2/TRUCK").exists(),
-            "Evo 2 trucks not imported: run `python3 tools/evo2_trucks.py`"
+            r.join("assets/extracted/model/vehicle/TRUCK").exists(),
+            "retail truck data missing: run `python3 tools/setup_evo2.py`"
         );
         r
     }
@@ -684,7 +684,6 @@ mod roster_tests {
         let raw = read(
             &[
                 "assets/extracted/texture/texture/ART",
-                "assets/extracted/evo2/texture/ART",
             ],
             "RAW",
         )?;

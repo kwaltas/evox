@@ -222,13 +222,28 @@ pub fn run(level: u32) -> i32 {
             ) as i32;
 
             let colliders = crate::collide::build(&t);
+            let rmin = colliders
+                .iter()
+                .map(|c| c.radius)
+                .fold(f32::INFINITY, f32::min);
+            let rmax = colliders.iter().map(|c| c.radius).fold(0.0f32, f32::max);
+            let hmin = colliders
+                .iter()
+                .map(|c| c.half_height)
+                .fold(f32::INFINITY, f32::min);
             fails += !check(
                 "prop colliders cover the scenery",
                 colliders.len() > 30
                     && colliders
                         .iter()
-                        .all(|c| c.radius >= 0.25 && c.radius <= 2.2 && c.half_height > 0.0),
-                &format!("{} colliders from {} props", colliders.len(), t.props.len()),
+                        .all(|c| c.radius >= crate::collide::MIN_POST_RADIUS
+                            && c.radius <= crate::collide::MAX_RADIUS
+                            && c.half_height > 0.0),
+                &format!(
+                    "{} colliders from {} props, radius {rmin:.2}..{rmax:.2}, half height min {hmin:.2}",
+                    colliders.len(),
+                    t.props.len()
+                ),
             ) as i32;
         }
     } else {

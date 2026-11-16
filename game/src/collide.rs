@@ -28,12 +28,12 @@ pub struct Collider {
 }
 
 /// Widest single cylinder; wider footprints are covered by several.
-const MAX_RADIUS: f32 = 2.2;
+pub(crate) const MAX_RADIUS: f32 = 2.2;
 /// Thinnest cylinder: the trunk radius offroad4x4 uses for every tree.
 const MIN_RADIUS: f32 = 0.4;
 /// Thinnest fitted cylinder: a sign post or a utility pole, which the retail
 /// racing lines pass within about a metre of.
-const MIN_POST_RADIUS: f32 = 0.15;
+pub(crate) const MIN_POST_RADIUS: f32 = 0.15;
 /// Trees are placed by their centre, several metres up; the trunk cylinder
 /// reaches this far either side of it so it always spans the ground.
 const TREE_HALF_HEIGHT_M: f32 = 30.0;

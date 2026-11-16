@@ -1137,6 +1137,112 @@ fn parse_course(path: &Path) -> (Vec<Gate>, Vec<Vec<Vec3>>) {
     (gates, paths)
 }
 
+/// `.SIT` revision 7 (4x4 Evo 2). `*** Boxes ***` here is a typed block list:
+/// a `boxTypeList`, a `boxCount`, a numbered `Box name list`, and then
+/// `// Box data list` with one block per object:
+///
+/// ```text
+/// { 1 CCollide
+///     ""    // name
+///     "SR3STUMP.SMF"    // staticName
+///     4.14567,1.01728,4    // size
+///     4296.57,145.145,3908.04    // wPos
+///     0.053881,6.25893,0    // wOrient
+/// ```
+///
+/// Each field is a value line followed by its `// tag` comment, so the tags
+/// identify fields without depending on their order. Positions are feet.
+fn parse_sit_v7(text: &str) -> Vec<Prop> {
+    /// Box types that place solid scenery. The rest (`CCheckpoint`,
+    /// `CVehicle`, `CNonCollide*`, `CTriggerBox`, `CTreasure`,
+    /// `CFlyingObject`, `CTrain`) are markers or pass-through objects.
+    const SOLID: [&str; 7] = [
+        "CBox",
+        "CCollide",
+        "CCollisionBox",
+        "CGroundBox",
+        "CLinkableBox",
+        "CTree",
+        "CTreeCollisionBox",
+    ];
+
+    let mut out: Vec<Prop> = Vec::new();
+    let mut in_data = false;
+    let mut kind = String::new();
+    let mut pos: Option<Vec3> = None;
+    let mut yaw = 0.0f32;
+    let mut model = String::new();
+    let mut mass = 0.0f32;
+
+    for line in text.lines().map(|l| l.trim_end_matches('\r').trim()) {
+        if !in_data {
+            in_data = line == "// Box data list";
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('{') {
+            // `{ 3 CCheckpoint`: the ordinal is not the type.
+            kind = rest.split_whitespace().nth(1).unwrap_or("").to_string();
+            pos = None;
+            yaw = 0.0;
+            model.clear();
+            mass = 0.0;
+            continue;
+        }
+        if line.starts_with('}') {
+            if SOLID.contains(&kind.as_str()) {
+                if let (Some(p), false) = (pos, model.is_empty()) {
+                    out.push(Prop {
+                        pos: p,
+                        yaw,
+                        model: model.clone(),
+                        moving: mass > 0.0,
+                        ..Default::default()
+                    });
+                }
+            }
+            kind.clear();
+            continue;
+        }
+        let Some((value, tag)) = line.split_once("//") else {
+            continue;
+        };
+        let value = value.trim();
+        match tag.trim() {
+            "staticName" => {
+                model = value
+                    .trim_matches('"')
+                    .trim_end_matches(".smf")
+                    .trim_end_matches(".SMF")
+                    .to_ascii_uppercase();
+            }
+            "wPos" => {
+                let parts: Vec<f32> = value
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if parts.len() >= 3 {
+                    let p = vec3(parts[0] * FT, parts[1] * FT, parts[2] * FT);
+                    if p.is_finite() && p.x.abs() < 9000.0 && p.z.abs() < 9000.0 {
+                        pos = Some(p);
+                    }
+                }
+            }
+            "wOrient" => {
+                let parts: Vec<f32> = value
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if parts.len() >= 3 {
+                    yaw = parts[2];
+                }
+            }
+            "mass" => mass = value.parse().unwrap_or(0.0),
+            _ => {}
+        }
+    }
+    out
+}
+
 pub(crate) fn parse_sit(path: PathBuf) -> Vec<Prop> {
     let Ok(bytes) = std::fs::read(&path) else {
         return Vec::new();
@@ -1144,6 +1250,9 @@ pub(crate) fn parse_sit(path: PathBuf) -> Vec<Prop> {
     let text = String::from_utf8_lossy(&bytes);
     if !text.starts_with("version") {
         return Vec::new();
+    }
+    if text.contains("// Box data list") {
+        return parse_sit_v7(&text);
     }
     let mut out = Vec::new();
     let mut in_boxes = false;
