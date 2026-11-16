@@ -431,10 +431,12 @@ mod tests {
             return;
         };
         let s = Smf::parse(&text).unwrap();
-        assert_eq!(s.meshes.len(), 35);
+        // Evo 2 retail truck.pod: BLAZERZR2 is 32 meshes, not the 35 of the
+        // Evo 1 BLAZZR2 the old assertion was copied from.
+        assert_eq!(s.meshes.len(), 32);
         let (lo, hi) = s.bounds();
         let len = hi.z - lo.z;
-        // ~15 ft van body, converted to metres.
+        // ~15 ft van body (4.61 m), converted to metres.
         assert!((4.0..6.0).contains(&len), "model length {len}");
         assert!(!s.meshes[0].texture.is_empty());
     }

@@ -291,8 +291,9 @@ const ADPCM_ADAPT: [i32; 16] = [
 /// The nibble is a *step index*, not a multiplier: `diff` picks the signed
 /// delta and `index_shift` moves a cursor 0..=88 through the 89-entry
 /// `YAMAHA_STEP` table (YMZ/Yamaha CE codec; `Sounds.Samples.cxx` refuses these
-/// WAVs off WinCE because the platform decodes them in hardware). Used by
-/// `SKID-D1N.WAV` in the retail sound bank.
+/// WAVs off WinCE because the platform decodes them in hardware). Evo 1's
+/// `SKID-D1N.WAV` used it; the Evo 2 sound bank is all PCM, so the codec is
+/// covered by the synthetic test below.
 const YAMAHA_DIFFLOOKUP: [i32; 16] = [1, 3, 5, 7, 9, 11, 13, 15, -1, -3, -5, -7, -9, -11, -13, -15];
 const YAMAHA_INDEX_SHIFT: [i32; 16] = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
 /// Step sizes in 1/8 sample units; index 0 is the quietest, 88 the loudest.
@@ -997,7 +998,7 @@ mod tests {
 
     #[test]
     fn decodes_yamaha_adpcm() {
-        // Tag 0x0020: Yamaha ADPCM (used in SKID-D1N.WAV). A run of `0x11`
+        // Tag 0x0020: Yamaha ADPCM (Evo 1's SKID-D1N.WAV). A run of `0x11`
         // nibbles is +1 with index shift −1, so it is the *quiet* direction and
         // must never clip; a run of `0x55` (+3, +4 steps) must grow louder.
         let p = decode_wav(&wav(0x20, 4, 22_050, 1, 1, &[0x11u8; 100])).unwrap();
@@ -1013,30 +1014,22 @@ mod tests {
         assert!(loud.samples.iter().all(|s| s.abs() <= 1.0));
     }
 
-    /// `SKID-D1N.WAV` is the bank's only Yamaha ADPCM file. It used to be
-    /// decoded with a fixed `step` multiply/`>> 8` approximation that walked
-    /// the step size out of range and clipped; the 89-entry step table keeps
-    /// it inside int16 and at full sample count (2 per byte).
+    /// Retail skid sample decodes at full rate without clipping. Evo 2's bank
+    /// ships `SKID-C1.WAV` (PCM); Evo 1's Yamaha `SKID-D1N.WAV` is not on the
+    /// disc, so the ADPCM codec is guarded by `decodes_yamaha_adpcm` instead.
     #[test]
-    fn skid_wav_decodes_without_clipping() {
-        let Some(dir) = [
+    fn retail_skid_wav_decodes_without_clipping() {
+        require_assets!();
+        let dir = [
             "assets/extracted/audio/sfx/SOUND",
             "../assets/extracted/audio/sfx/SOUND",
         ]
         .into_iter()
         .find(|d| std::path::Path::new(d).is_dir())
-        .or_else(|| {
-            std::path::Path::new("assets/extracted/audio/sfx/SOUND")
-                .is_dir()
-                .then_some("assets/extracted/audio/sfx/SOUND")
-        }) else {
-            return;
-        };
-        let path = format!("{dir}/SKID-D1N.WAV");
-        let Ok(bytes) = std::fs::read(&path) else {
-            return;
-        };
-        let pcm = decode_wav(&bytes).expect("yamaha adpcm decodes");
+        .expect("sound bank directory");
+        let path = format!("{dir}/SKID-C1.WAV");
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let pcm = decode_wav(&bytes).expect("SKID-C1.WAV decodes");
         assert_eq!(pcm.rate, 22_050);
         let clipped = pcm.samples.iter().filter(|s| s.abs() >= 0.999).count();
         assert!(
@@ -1062,7 +1055,7 @@ mod tests {
         for name in [
             ENGINE_RUN_WAV,
             ENGINE_IDLE_WAV,
-            "SKID-D1N.WAV",
+            "SKID-C1.WAV",
             "SKID_01.WAV",
         ] {
             let path = format!("{dir}/{name}");
