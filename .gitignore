@@ -1,0 +1,40 @@
+# ── Retail game data: NEVER commit (bring your own data) ─────────────────────
+/4x4data/
+/4x4e/
+/4x4e2/
+/4x4re/
+/4x4evo2-work/
+/craft-anything/
+/assets/extracted/
+/assets/custom_tracks/
+
+# Retail formats must never enter git (textures, palettes, audio, pods)
+*.POD
+*.pod
+*.WAV
+*.wav
+*.TEX
+*.RAW
+
+# ── Local extraction / build output ──────────────────────────────────────────
+/target/
+/assets/manifest.json
+/assets/ui
+/assets/vehicles
+/assets/tracks
+/assets/audio
+/assets/build
+/assets/mods
+/assets/intro
+/assets/ui2
+
+# ── OS / editor noise ────────────────────────────────────────────────────────
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+
+# The built-in synthetic test rig is original source data, not retail data.
+!game/src/selftest_truck.trk

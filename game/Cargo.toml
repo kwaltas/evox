@@ -1,0 +1,20 @@
+[package]
+name = "evox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Clean-room source port of 4x4 Evolution 1/2"
+
+[[bin]]
+name = "evox"
+path = "src/main.rs"
+
+[features]
+default = []
+headless = []
+
+[dependencies]
+macroquad = { version = "0.4", features = ["audio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
