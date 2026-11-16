@@ -119,7 +119,7 @@ pub fn run(level: u32) -> i32 {
     // Renderable assets: text meshes and their palette textures.
     let models = Path::new(asset_root()).join("model/vehicle/MODELS");
     if models.exists() {
-        let body = std::fs::read_to_string(models.join("BLAZZR2.SMF"))
+        let body = std::fs::read_to_string(models.join("BLAZERZR2.SMF"))
             .ok()
             .and_then(|t| crate::smf::Smf::parse(&t).ok());
         let (ok, detail) = match &body {
@@ -147,9 +147,9 @@ pub fn run(level: u32) -> i32 {
             "",
         ) as i32;
 
-        let tex = Path::new(asset_root()).join("texture/texture/ART/BLAZZR2.RAW");
-        let act = Path::new(asset_root()).join("texture/palette/ART/BLAZZR2.ACT");
-        let opa = Path::new(asset_root()).join("texture/opacity/ART/BLAZZR2.OPA");
+        let tex = Path::new(asset_root()).join("texture/texture/ART/AA3CHECK.RAW");
+        let act = Path::new(asset_root()).join("texture/palette/ART/AA3CHECK.ACT");
+        let opa = Path::new(asset_root()).join("texture/opacity/ART/AA3CHECK.OPA");
         fails += !check(
             "vehicle albedo + palette + opacity bind",
             tex.exists() && act.exists() && opa.exists(),

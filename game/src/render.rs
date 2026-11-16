@@ -26,8 +26,9 @@ use crate::vehicle::FT;
 pub const MODEL_DIR: &str = "assets/extracted/model/vehicle/MODELS";
 
 /// Body used when a mod truck names a mesh that is not installed. It comes
-/// from the retail library, so there is no primitive stand-in.
-const SPARE_BODY: &str = "BLAZZR2.SMF";
+/// from the retail library, so there is no primitive stand-in. `BLAZERZR2` is
+/// the 4x4 Evo 2 body that replaces Evo 1's `BLAZZR2` spare.
+const SPARE_BODY: &str = "BLAZERZR2.SMF";
 
 /// Nominal radius of the `33X12` wheel meshes, in metres.
 const WHEEL_RADIUS_M: f32 = 1.375 * FT;
@@ -1021,10 +1022,10 @@ mod tests {
 
     #[test]
     fn retail_body_and_wheel_models_load() {
-        let Ok(_) = std::fs::metadata(Path::new(MODEL_DIR).join("BLAZZR2.SMF")) else {
+        let Ok(_) = std::fs::metadata(Path::new(MODEL_DIR).join("BLAZERZR2.SMF")) else {
             return;
         };
-        let text = std::fs::read_to_string(Path::new(MODEL_DIR).join("BLAZZR2.SMF")).unwrap();
+        let text = std::fs::read_to_string(Path::new(MODEL_DIR).join("BLAZERZR2.SMF")).unwrap();
         let smf = Smf::parse(&text).unwrap();
         let (lo, hi) = smf.bounds();
         assert!(hi.z - lo.z > 4.0, "expected metre-scale geometry");

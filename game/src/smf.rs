@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn retail_van_parses_as_feet() {
-        let path = "../assets/extracted/model/vehicle/MODELS/BLAZZR2.SMF";
+        let path = "../assets/extracted/model/vehicle/MODELS/BLAZERZR2.SMF";
         let Ok(text) = std::fs::read_to_string(path) else {
             return;
         };
