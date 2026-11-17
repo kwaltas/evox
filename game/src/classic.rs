@@ -640,6 +640,11 @@ pub fn speedo(
         (2.236_936, 140.0, 20.0, 1609.344, 21.0)
     };
     let speed = speed_ms.abs() * k;
+    // The cluster overlaps the tach: an opaque disc under the (translucent)
+    // retail face makes the speedometer physically occlude the dial behind it.
+    if face.is_some() {
+        draw_circle(cx, cy, r * 0.985, Color::new(0.012, 0.014, 0.012, 1.0));
+    }
     let tex_dial = dial_art(face, needle, cx, cy, r, speed, max);
     if !tex_dial {
         dial(ui, cx, cy, r, max, 10.0, every, 999.0, speed, 1.0);
@@ -655,15 +660,11 @@ pub fn speedo(
     let tenths = ((odo_m / unit_m) * 10.0).floor() as u64;
     let digits = [100000u64, 10000, 1000, 100, 10, 1].map(|p| (tenths / 10 / p) % 10);
     let rows = [1.0, 17.0, 31.0, 46.0, 62.0, 77.0, 91.0, 107.0, 121.0, 136.0];
-    let zoom = 1.5;
-    let (ox, oy) = (cx - 40.0 * zoom, cy + 56.0);
-    draw_rectangle(
-        ox - 3.0,
-        oy - 2.0,
-        86.0 * zoom,
-        17.0 * zoom,
-        Color::new(0.0, 0.0, 0.0, 0.6),
-    );
+    // Odometer drums sit directly on the face, like the counter moulded into
+    // the retail speedometer; no backing plate.
+    let zoom = 1.35;
+    let (ox, oy) = (cx - 40.0 * zoom, cy + 68.0);
+    let ink = Color::new(0.93, 0.95, 0.93, 0.95);
     for (i, d) in digits.iter().enumerate() {
         sheet(
             odom,
@@ -671,7 +672,7 @@ pub fn speedo(
             ox + 10.0 * zoom * i as f32,
             oy,
             zoom,
-            WHITE,
+            ink,
         );
     }
     sheet(
@@ -680,7 +681,7 @@ pub fn speedo(
         ox + 62.0 * zoom,
         oy,
         zoom,
-        WHITE,
+        ink,
     );
     sheet(
         odom,
@@ -688,7 +689,7 @@ pub fn speedo(
         ox + 70.0 * zoom,
         oy,
         zoom,
-        WHITE,
+        ink,
     );
 }
 
@@ -706,7 +707,6 @@ pub fn tach(
     rpm: f32,
     redline: f32,
     gear: usize,
-    drive_mode: u8,
 ) {
     let max = ((redline / 1000.0).ceil() + 1.0) * 1000.0;
     // The retail RPM face is labelled 0-8 x1000.
@@ -733,28 +733,27 @@ pub fn tach(
             WHITE,
         );
     }
+    // Just the numeral from the ODOM gear cell: the white ring baked into the
+    // cell reads as a hard badge, unlike the retail indicator.
     let row = gear.min(7) as f32;
     sheet(
         odom,
-        Rect::new(128.0, 2.0 + 28.0 * row, 24.0, 24.0),
-        cx - 18.0,
-        cy + 40.0,
-        1.5,
+        Rect::new(136.0, 7.0 + 28.0 * row, 9.0, 10.0),
+        cx - 9.0,
+        cy + 36.0,
+        2.0,
         WHITE,
     );
-    let mode = match drive_mode {
+}
+
+/// Retail drive-mode label (`2WD` / `4WDL` / `4WDH`) from the ODOM sheet.
+pub fn drive_mode(odom: Option<&Texture2D>, x: f32, y: f32, mode: u8) {
+    let row = match mode {
         0 => 59.0,
         2 => 78.0,
         _ => 97.0,
     };
-    sheet(
-        odom,
-        Rect::new(183.0, mode, 46.0, 11.0),
-        cx - 34.5,
-        cy + r + 6.0,
-        1.5,
-        WHITE,
-    );
+    sheet(odom, Rect::new(183.0, row, 46.0, 11.0), x, y, 1.5, WHITE);
 }
 
 type RadarCache = Option<(String, i32, i32, i32, Texture2D)>;

@@ -1823,32 +1823,32 @@ pub fn race(app: &mut App) {
     // bottom-left: one instrument cluster like the retail HUD. The tach sits
     // to the right and overlaps the speedo; it is drawn first so the speedo
     // face (and its odometer) stays legible on top. The 4WD label hangs below.
-    let cluster_y = sh - 146.0;
+    let cluster_y = sh - 162.0;
     crate::classic::tach(
         ui,
         odom,
         rpm_face,
         needle,
-        288.0,
-        cluster_y,
-        96.0,
+        300.0,
+        cluster_y - 10.0,
+        78.0,
         race.player.rpm,
         race.player.truck.engine.redline.max(1000.0),
         race.player.gear,
-        race.drive_mode,
     );
     crate::classic::speedo(
         ui,
         odom,
         mph_face,
         needle,
-        118.0,
+        140.0,
         cluster_y,
-        96.0,
+        118.0,
         race.player.vel.length(),
         race.odo_m,
         app.profile.settings.metric,
     );
+    crate::classic::drive_mode(odom, 105.5, cluster_y + 126.0, race.drive_mode);
     if race.phase == crate::race::Phase::Countdown {
         app.ui.centered(
             vw() * 0.5,
