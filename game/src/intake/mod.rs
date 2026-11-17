@@ -4,6 +4,7 @@
 
 pub mod extract;
 pub mod iso;
+pub mod loader;
 pub mod pod;
 pub mod tiff;
 pub mod verify;

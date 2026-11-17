@@ -19,12 +19,13 @@ the original year.
 
 ## First boot
 
-`tools/setup_evo2.py`:
+First boot uses the built-in Rust extractor (or `tools/setup_evo2.py` for
+scripted intake):
 
-1. reads only the POD archives under the path you give it,
-2. checks each against `assets/pods_evo2.md5` (region-mismatched discs are
-   reported but can be overridden with `--skip-verify`),
-3. writes a new tree under `assets/extracted/`,
+1. reads only the POD archives from the ISO or folder you select,
+2. checks each against the embedded `pods_evo2.md5` manifest (mismatches
+   require explicit confirmation),
+3. writes a new tree under the per-user data directory,
 4. records the source path in `install.json` for support.
 
 No network access, no telemetry to a third party. Nothing is uploaded.

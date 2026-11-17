@@ -42,6 +42,19 @@ retail games is committed to this repository — no textures, models, audio,
 You need **your own retail copy** of 4x4 Evolution 2. Evox does not download,
 bundle or ship any game data.
 
+On first launch Evox checks for a complete extracted tree. If none is found it
+opens a native file dialog asking for your retail **ISO** (or the mounted disc /
+folder containing the `.POD` files), extracts the archives itself, shows a
+progress screen, and boots straight into the original UI. The tree lives in a
+per-user writable directory:
+
+- macOS `~/Library/Application Support/Evox`
+- Windows `%LOCALAPPDATA%\Evox`
+- Linux `$XDG_DATA_HOME/evox` or `~/.local/share/evox`
+
+Set `EVOX_ASSET_ROOT` to use a different root, or pass `--assets DIR`.
+The Python tools below remain available for offline/CI intake.
+
 1. **Evo 2 PODs.** Create a `4x4evo2-work/pods/` folder at the workspace root
    and place your retail **4x4 Evolution 2** `.POD` files inside (the tools
    expect the unpacked pod tree, e.g. `LEVELS/`, `DATA/`, `WORLD/`, `ART/`).

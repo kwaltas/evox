@@ -11,9 +11,13 @@
 ```bash
 git clone <repo> evox && cd evox
 cargo build --release -p evox
-python3 tools/setup_evo2.py --source /path/to/evo2/pods --out assets/extracted
 ./target/release/evox
 ```
+
+On first launch the game opens a native picker for your retail ISO/disc and
+extracts into the per-user data directory. For scripted/CI intake, use
+`python3 tools/setup_evo2.py --source /path/to/evo2/pods --out assets/extracted`
+and run from that directory.
 
 The binary resolves assets relative to the working directory (`assets/...`) and
 stores the profile in `$EVOX_DATA_DIR` or `~/.evox`.

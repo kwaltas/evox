@@ -118,6 +118,21 @@ fn main() {
             }
         }
     }
+    let job = match intake::begin(assets_override.as_deref()) {
+        Ok(intake::Boot::Ready(root)) => {
+            if let Err(e) = std::env::set_current_dir(&root) {
+                eprintln!("intake: cannot enter {}: {e}", root.display());
+                return;
+            }
+            None
+        }
+        Ok(intake::Boot::Intake(job)) => Some(job),
+        Err(e) => {
+            eprintln!("intake: {e}");
+            return;
+        }
+    };
+
     let conf = Conf {
         window_title: format!("EvoX {VERSION}"),
         window_width: w as i32,
@@ -129,13 +144,19 @@ fn main() {
         ..Default::default()
     };
 
-    macroquad::Window::from_config(conf, run(debug));
+    macroquad::Window::from_config(conf, run(debug, job));
 }
 
-async fn run(debug: bool) {
+async fn run(debug: bool, job: Option<intake::Job>) {
     // Retail meshes exceed Macroquad's default 5k-index draw call, which
     // silently clamps body geometry. Raise the batch budget before drawing.
     macroquad::window::gl_set_drawcall_buffer_capacity(65_535, 200_000);
+    if let Some(job) = job {
+        if let Err(e) = intake::loader::run(job).await {
+            eprintln!("intake: {e}");
+            return;
+        }
+    }
     let mut app = app::App::new().await;
     app.show_debug = debug;
     // QA hooks: EVOX_TRUCK=<TRK stem> picks a truck, EVOX_PAINT=<n> a paint.
