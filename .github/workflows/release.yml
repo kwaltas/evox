@@ -1,0 +1,106 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: macos-latest
+            target: universal-apple-darwin
+            name: macos-universal
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libfuse2
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "universal-apple-darwin" ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+            cargo build --release -p evox --target x86_64-apple-darwin
+            cargo build --release -p evox --target aarch64-apple-darwin
+            mkdir -p dist
+            lipo -create \
+              target/x86_64-apple-darwin/release/evox \
+              target/aarch64-apple-darwin/release/evox \
+              -output dist/evox
+          else
+            cargo build --release -p evox --target ${{ matrix.target }}
+            mkdir -p dist
+            cp target/${{ matrix.target }}/release/evox dist/evox
+          fi
+          cp README.md docs/BUILD.md docs/LEGAL.md dist/
+          mkdir -p dist/tools && cp tools/pod.py tools/podpack.py tools/setup_evo2.py tools/verify_manifest.py dist/tools/
+          cp assets/pods_evo2.md5 dist/
+
+      - name: Sign (macOS, ad-hoc fallback)
+        if: runner.os == 'macOS'
+        run: codesign --force --deep --sign - dist/evox || true
+
+      - name: Sign (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERT) {
+            $cert = [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERT))
+            & signtool sign /f "$env:RUNNER_TEMP\cert.pfx" /p "$env:WINDOWS_CERT_PASS" /tr http://timestamp.digicert.com /td sha256 /fd sha256 dist\evox.exe
+          } else { Write-Host "no cert, unsigned build" }
+        env:
+          WINDOWS_CERT: ${{ secrets.WINDOWS_CERT }}
+          WINDOWS_CERT_PASS: ${{ secrets.WINDOWS_CERT_PASS }}
+
+      - name: AppImage
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp dist/evox AppDir/usr/bin/
+          cat > AppDir/evox.desktop <<'EOF'
+          [Desktop Entry]
+          Name=EvoX
+          Exec=evox
+          Type=Application
+          Categories=Game;
+          EOF
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/AppRun-x86_64 -O AppDir/AppRun
+          chmod +x AppDir/AppRun
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+          chmod +x appimagetool
+          ./appimagetool AppDir dist/evox-linux-x86_64.AppImage
+
+      - name: Package
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "Linux" ]; then zip -9 ../evox-${{ matrix.name }}.zip evox-linux-x86_64.AppImage README.md LEGAL.md pods_evo2.md5; else
+            (cd .. && tar -czf evox-${{ matrix.name }}.tar.gz -C dist .)
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            evox-${{ matrix.name }}.zip
+            evox-${{ matrix.name }}.tar.gz
+          generate_release_notes: true

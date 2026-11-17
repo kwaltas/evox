@@ -11,7 +11,7 @@
 ```bash
 git clone <repo> evox && cd evox
 cargo build --release -p evox
-python3 tools/setup_wizard.py --source /path/to/game --out assets/extracted
+python3 tools/setup_evo2.py --source /path/to/evo2/pods --out assets/extracted
 ./target/release/evox
 ```
 
@@ -42,8 +42,8 @@ packaging and prints `[--]` for skipped groups.
 - `evox-macos-universal.zip` (x86_64 + aarch64, ad-hoc signed then notarised)
 - `evox-linux-x86_64.AppImage`
 
-Artefacts contain no game data. Ship `assets/pods.md5` alongside so the wizard
-can verify the user's disc.
+Artefacts contain no game data. Ship `assets/pods_evo2.md5` alongside so the
+intake tool can verify the user's disc.
 
 ## Docker
 

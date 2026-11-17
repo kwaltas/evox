@@ -7,7 +7,7 @@ or level data is redistributed. The user's own disc supplies those.
 
 What is derived and therefore kept in git:
 
-- `assets/pods.md5` — 26 MD5 digests of the retail archives
+- `assets/pods_evo2.md5` — 52 MD5 digests of the retail 4x4 Evolution 2 archives
 - `assets/vehicles/_selftest.trk` — one vehicle definition, as a parser fixture
 - format grammar (documented in `docs/MODDING.md`)
 
@@ -19,11 +19,11 @@ the original year.
 
 ## First boot
 
-`tools/setup_wizard.py`:
+`tools/setup_evo2.py`:
 
-1. reads only the archives under the path you give it,
-2. checks each against `assets/pods.md5` (region-mismatched discs are reported
-   but can be overridden),
+1. reads only the POD archives under the path you give it,
+2. checks each against `assets/pods_evo2.md5` (region-mismatched discs are
+   reported but can be overridden with `--skip-verify`),
 3. writes a new tree under `assets/extracted/`,
 4. records the source path in `install.json` for support.
 

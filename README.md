@@ -15,10 +15,10 @@ retail games is committed to this repository — no textures, models, audio,
 `.POD` files or decompiled C++.
 
 ```
-┌──────────────────┐   tools/setup_wizard.py   ┌───────────────────┐
+┌──────────────────┐   tools/setup_evo2.py    ┌───────────────────┐
 │ your own 4x4 Evo │ ────────────────────────► │ assets/extracted  │
-│ CD/ISO or folder │   local, MD5-checked      └─────────┬─────────┘
-└──────────────────┘                                      │
+│ 2 CD/ISO or PODs │   local, checksum-checked └─────────┬─────────┘
+└──────────────────┘                                       │
                                                ┌──────────▼─────────┐
                                                │ evox (Rust/macroquad)│
                                                └─────────────────────┘
@@ -39,35 +39,35 @@ retail games is committed to this repository — no textures, models, audio,
 
 ## How to Play (Asset Extraction)
 
-You need **your own retail copies** of 4x4 Evolution 1 and/or 4x4 Evolution 2.
-Evox does not download, bundle or ship any game data.
+You need **your own retail copy** of 4x4 Evolution 2. Evox does not download,
+bundle or ship any game data.
 
-1. **Evo 1 PODs.** Create a `4x4data/out/Program_Executable_Files/` folder at
-   the workspace root and place your retail **4x4 Evolution 1** `.POD` files
-   inside.
-
-2. **Evo 2 PODs.** Create a `4x4evo2-work/pods/` folder at the workspace root
+1. **Evo 2 PODs.** Create a `4x4evo2-work/pods/` folder at the workspace root
    and place your retail **4x4 Evolution 2** `.POD` files inside (the tools
    expect the unpacked pod tree, e.g. `LEVELS/`, `DATA/`, `WORLD/`, `ART/`).
 
-3. **Extract Evo 1.** Run:
+2. **Extract the base tree.** Run:
 
    ```bash
-   python3 tools/setup_wizard.py --source 4x4data/out/Program_Executable_Files
+   python3 tools/setup_evo2.py --source 4x4evo2-work/pods --out assets/extracted
    ```
 
-   This verifies each archive and extracts the Evo 1 base assets into
-   `assets/extracted/`. Nothing is written back to your retail files.
+   This verifies each archive against `assets/pods_evo2.md5` (region
+   mismatches are reported and can be overridden with `--skip-verify`) and
+   writes the extracted assets into `assets/extracted/`. Add `--bake-ui` to
+   also convert the interface art to PNG. Nothing is written back to your
+   retail files.
 
-4. **Merge Evo 2.** Extract and merge the Evo 2 vehicles and tracks safely
-   (Evo 1 files always win on name collisions):
+3. **Merge Evo 2-exclusive track data** when your pod tree carries levels
+   that are not in the base extraction:
 
    ```bash
-   python3 tools/evo2_trucks.py
    python3 tools/evo2_tracks.py
    ```
 
-5. **Build and run:**
+   Existing files always win on name collisions; nothing is overwritten.
+
+4. **Build and run:**
 
    ```bash
    cargo run --release

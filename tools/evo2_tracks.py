@@ -19,7 +19,7 @@ exclusive track's data:
   8. Course: report the `.SIT` `*** Course ***` gate count and `*** Paths ***`
      splines, the real lap geometry the game parses (`terrain::parse_course`)
 
-Evo 1 files win on name collisions (never overwritten).
+Existing files win on name collisions (never overwritten).
 """
 import argparse
 import json
@@ -29,13 +29,6 @@ import struct
 import sys
 
 DEFAULT_SRC = os.path.join('4x4evo2-work', 'pods')
-
-# Evo 1 track stems shipped in retail 4x4 Evolution 1:
-EVO1_TRACKS = {
-    'ASPEN', 'CON2', 'CZ2000', 'DEVIL', 'FM109', 'ISLAND2', 'JYARD',
-    'MATT', 'MCROSS', 'OILFLD', 'SHRTAIR', 'SHTARTC', 'SHTBAJA', 'SHTSWAM',
-    'THEHILL', 'ZONA',
-}
 
 
 def listing(d):
@@ -196,12 +189,16 @@ def main():
         pod_art = listing(pod_art_dir)
 
         # Process each .LVL in this pod
+        pod_imported = False
         for lvl_name in sorted(os.listdir(lvl_dir)):
             if not lvl_name.upper().endswith('.LVL'):
                 continue
             stem = lvl_name[:-4].upper()
 
-            if stem in EVO1_TRACKS:
+            # Collision policy: an existing level always wins. Evo 2 ships
+            # Evo 1-named tracks in its own pods, and re-importing them would
+            # replace the Evo 1 extraction with the Evo 2 variant.
+            if os.path.exists(os.path.join(dst_lvl, f'{stem}.LVL')):
                 report['skipped_same_file'].append(f'{stem}.LVL')
                 continue
 
@@ -224,6 +221,7 @@ def main():
 
             # 1. Copy .LVL
             open(os.path.join(dst_lvl, f'{stem}.LVL'), 'wb').write(lvl_bytes)
+            pod_imported = True
 
             # 2. Copy DATA files (heightmap .RAW, .CLR, .TEX, .SDW, .WAT, .RTD)
             for declared in [raw_name, clr_name, tex_name, f'{stem}.SDW', f'{stem}.WAT', f'{stem}.RTD']:
@@ -282,8 +280,10 @@ def main():
 
             report['tracks'].append(stem)
 
-        # 5. Copy and convert prop models and textures from this pod
-        if pod not in EVO1_TRACKS:
+        # 5. Copy and convert prop models and textures from this pod. A pod
+        # whose levels were all already present belongs to an existing intake
+        # (Evo 1 names); its assets must not be mixed in.
+        if pod_imported:
             # Models
             for smf_name, real_smf in pod_models.items():
                 if not smf_name.endswith('.SMF'):
@@ -370,7 +370,7 @@ def main():
         f"textures {len(report['textures'])}, "
         f"ai_lines {len(report['ai_lines'])}, "
         f"course {sum(1 for c in report['course'] if c['gates'] or c['longest_path'] >= 8)}/{len(report['course'])}, "
-        f"skipped (Evo 1 has the file) {len(report['skipped_same_file'])}, "
+        f"skipped (existing level wins) {len(report['skipped_same_file'])}, "
         f"missing {len(report['missing'])}"
     )
     for m in report['missing']:
