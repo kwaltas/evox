@@ -64,6 +64,7 @@ EXT_CLASS = {
     ".act": ("texture", "palette"),
     ".opa": ("texture", "opacity"),
     ".tga": ("texture", "texture"),
+    ".tif": ("texture", "unknown"),
     ".bmp": ("texture", "texture"),
     ".pbm": ("texture", "texture"),
     ".png": ("texture", "texture"),

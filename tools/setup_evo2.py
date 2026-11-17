@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -130,6 +131,81 @@ def human(n: int) -> str:
     return f"{n / 1048576:.1f} MiB"
 
 
+def read_palette_tif(path: Path) -> tuple[int, int, bytes, bytes, bytes]:
+    """(w, h, indices, palette768, mask) of an uncompressed palette TIFF.
+
+    Evo 2 stores vehicle art as one- or two-sample palette TIFFs: sample 0 is
+    the colour index, sample 1 is the paint mask that Evo 1 shipped separately
+    as `.OPA`.
+    """
+    d = path.read_bytes()
+    if d[:4] != b"II*\x00":
+        raise ValueError(f"{path}: not a little-endian TIFF")
+    off = struct.unpack("<I", d[4:8])[0]
+    n = struct.unpack("<H", d[off : off + 2])[0]
+    tags: dict[int, list[int]] = {}
+    for k in range(n):
+        tag, typ, cnt, val = struct.unpack("<HHII", d[off + 2 + 12 * k : off + 14 + 12 * k])
+        size = {1: 1, 2: 1, 3: 2, 4: 4}.get(typ, 4)
+        raw = d[off + 10 + 12 * k : off + 14 + 12 * k] if size * cnt <= 4 else d[val : val + size * cnt]
+        fmt = {1: "B", 2: "B", 3: "H", 4: "I"}.get(typ, "I")
+        tags[tag] = list(struct.unpack("<%d%s" % (cnt, fmt), raw[: size * cnt]))
+    w, h = tags[256][0], tags[257][0]
+    spp = tags.get(277, [1])[0]
+    if tags.get(259, [1])[0] != 1 or tags.get(262, [0])[0] != 3 or 320 not in tags:
+        raise ValueError(f"{path}: not an uncompressed palette TIFF")
+    data = b"".join(d[o : o + c] for o, c in zip(tags[273], tags[279]))
+    if len(data) < w * h * spp:
+        raise ValueError(f"{path}: truncated pixel data")
+    cm = tags[320]
+    pal = bytearray()
+    for i in range(256):
+        pal += bytes((cm[i] >> 8, cm[256 + i] >> 8, cm[512 + i] >> 8))
+    idx = data[0 : w * h * spp : spp]
+    mask = data[1 : w * h * spp : spp] if spp >= 2 else b"\xff" * (w * h)
+    return w, h, bytes(idx), bytes(pal), bytes(mask)
+
+
+def convert_art(out: Path) -> dict[str, int]:
+    """Bake vehicle palette TIFFs into the RAW/ACT/OPA triplets the loader wants.
+
+    `pod.py` files them under `texture/vehicle/ART` (older trees used
+    `unknown/vehicle/ART`); the game reads the triplet from the texture,
+    palette and opacity trees, so convert once at intake time. UI art is
+    deliberately excluded: `ui.pod` also ships palette TIFFs (preview cards,
+    menu backgrounds), and baking those into `texture/texture/ART` would mix
+    interface images into the terrain texture library.
+    """
+    tex = out / "texture" / "texture" / "ART"
+    act = out / "texture" / "palette" / "ART"
+    opa = out / "texture" / "opacity" / "ART"
+    stats = {"converted": 0, "skipped": 0, "failed": 0}
+    sources = sorted(
+        set(out.glob("**/vehicle/ART/*.TIF")) | set(out.glob("**/vehicle/ART/*.tif"))
+    )
+    if not sources:
+        return stats
+    for d in (tex, act, opa):
+        d.mkdir(parents=True, exist_ok=True)
+    for tif in sources:
+        stem = tif.stem.upper()
+        if stem.endswith("_BUMP"):
+            continue
+        if (tex / f"{stem}.RAW").exists():
+            stats["skipped"] += 1
+            continue
+        try:
+            _w, _h, idx, pal, mask = read_palette_tif(tif)
+        except (ValueError, struct.error, OSError):
+            stats["failed"] += 1
+            continue
+        (tex / f"{stem}.RAW").write_bytes(idx)
+        (act / f"{stem}.ACT").write_bytes(pal)
+        (opa / f"{stem}.OPA").write_bytes(mask)
+        stats["converted"] += 1
+    return stats
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", help="ISO, mounted CD, folder with .cab files, or folder of PODs")
@@ -139,7 +215,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-verify", action="store_true", help="accept unknown or checksum-mismatched archives")
     ap.add_argument("--record-md5", action="store_true", help="write assets/pods_evo2.md5 from this copy")
     ap.add_argument("--bake-ui", action="store_true", help="also convert UI art to PNG")
+    ap.add_argument("--skip-art", action="store_true", help="keep vehicle art as raw TIFF copies")
+    ap.add_argument("--art-only", action="store_true", help="only (re)convert art in an existing tree")
     args = ap.parse_args(argv)
+
+    if args.art_only:
+        out = Path(args.out).expanduser()
+        stats = convert_art(out)
+        print(
+            f"art: converted {stats['converted']}, already present {stats['skipped']}, "
+            f"unreadable {stats['failed']}"
+        )
+        return 0
 
     source = args.source
     if not source and not args.yes:
@@ -231,6 +318,13 @@ def main(argv: list[str] | None = None) -> int:
             if target.exists():
                 shutil.rmtree(target)
             shutil.move(str(child), str(target))
+
+        if not args.skip_art:
+            stats = convert_art(out)
+            print(
+                f"art: converted {stats['converted']}, already present {stats['skipped']}, "
+                f"unreadable {stats['failed']}"
+            )
 
         if args.bake_ui:
             run([sys.executable, str(ROOT / "tools" / "art_convert.py"), "--in", str(out), "--out", str(out.parent / "ui")])

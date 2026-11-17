@@ -482,13 +482,38 @@ impl Assets {
     /// Track preview picture (`texture/ui/ART/<TRACK>.RAW`, 256×256): the
     /// same stem as the level, loaded once into `PREVIEW#<TRACK>`. `MATT`'s
     /// 64 KiB file here is the preview, not its heightmap.
+    ///
+    /// When a level has no 64 KiB preview the retail UI substitutes
+    /// `NOTRACK.RAW`: `FUN_005463b0` in retail `4x4.exe` builds
+    /// `art\<level>.raw`, loads it, and keeps the name only if the loaded
+    /// image's size field is `0x10000` (256×256); otherwise it passes
+    /// `notrack.raw` to the texture setter. Evo 2 ships per-track art only
+    /// for the 15 Evo 1 tracks, so the other 45 show this placeholder.
     pub fn track_preview(&mut self, track: &str) -> Option<Texture2D> {
         let stem = track.to_ascii_uppercase();
         let key = format!("PREVIEW#{stem}");
         if !self.cache.contains_key(&key) {
             self.load_ui_art(&key, &stem, false);
         }
-        self.cache.get(&key).cloned()
+        if let Some(tex) = self.cache.get(&key).cloned() {
+            return Some(tex);
+        }
+        const PLACEHOLDER: &str = "PREVIEW#NOTRACK";
+        if !self.cache.contains_key(PLACEHOLDER) {
+            self.load_ui_art(PLACEHOLDER, "NOTRACK", false);
+        }
+        eprintln!("track preview {stem}.RAW missing; using retail NOTRACK.RAW");
+        self.cache.get(PLACEHOLDER).cloned()
+    }
+
+    /// True when `track` has its own 64 KiB preview, i.e. [`Self::track_preview`]
+    /// is not the retail `NOTRACK.RAW` placeholder. The UI uses this to keep
+    /// the missing file visible instead of silently showing the placeholder.
+    pub fn has_own_track_preview(&self, track: &str) -> bool {
+        let stem = track.to_ascii_uppercase();
+        std::fs::metadata(Path::new(ART_DIR).join(format!("{stem}.RAW")))
+            .map(|m| m.len() == 65_536)
+            .unwrap_or(false)
     }
 
     /// The gauge needle is a colour-keyed sprite: the art ships without an
@@ -965,33 +990,70 @@ pub fn read_ai_lines(ai_dir: &Path, track: &str) -> Vec<crate::ai::RacingLine> {
 
 #[cfg(test)]
 mod tests {
-    /// Quick Race shows `texture/ui/ART/<LEVEL>.RAW` for the selected level;
-    /// it used to fall back silently to the `LOADING1` logo card.
+    /// Retail shows `texture/ui/ART/<LEVEL>.RAW` for the selected level and
+    /// substitutes `NOTRACK.RAW` when that 64 KiB load fails: `FUN_005463b0`
+    /// in retail `4x4.exe` keeps the level name only when the loaded image's
+    /// size field is `0x10000`, else it passes `notrack.raw`. Evo 2 ships
+    /// per-track art only for the 15 Evo 1 tracks; the 45 Evo 2-exclusive
+    /// levels legitimately use the placeholder.
     #[test]
-    fn every_level_has_a_preview_picture() {
+    fn every_level_has_a_preview_or_the_retail_placeholder() {
         require_assets!();
         let root = ["assets/extracted", "../assets/extracted"]
             .into_iter()
             .map(Path::new)
             .find(|p| p.exists())
             .expect("extracted assets");
-        let levels = std::fs::read_dir(root.join("track/track/LEVELS")).unwrap();
-        for e in levels.flatten() {
+        let art = root.join("texture/ui/ART");
+        let placeholder = art.join("NOTRACK.RAW");
+        assert_eq!(
+            std::fs::metadata(&placeholder)
+                .map(|m| m.len())
+                .unwrap_or(0),
+            65_536,
+            "retail NOTRACK.RAW placeholder missing or not 256x256"
+        );
+
+        let mut own = 0usize;
+        let mut missing = std::collections::BTreeSet::new();
+        for e in std::fs::read_dir(root.join("track/track/LEVELS"))
+            .unwrap()
+            .flatten()
+        {
             let stem = e
                 .path()
                 .file_stem()
                 .unwrap()
                 .to_string_lossy()
                 .to_ascii_uppercase();
-            let raw = root.join("texture/ui/ART").join(format!("{stem}.RAW"));
+            let raw = art.join(format!("{stem}.RAW"));
             let len = std::fs::metadata(&raw).map(|m| m.len()).unwrap_or(0);
-            assert_eq!(
-                len,
-                65_536,
-                "{stem}: preview {} missing or not 256x256",
-                raw.display()
-            );
+            if len == 0 {
+                missing.insert(stem);
+            } else {
+                assert_eq!(
+                    len,
+                    65_536,
+                    "{stem}: preview {} is not 256x256",
+                    raw.display()
+                );
+                own += 1;
+            }
         }
+
+        assert_eq!(own, 15, "Evo 1 tracks with their own retail preview");
+        let expected: std::collections::BTreeSet<&str> = [
+            "ALASKA1", "ALASKA2", "ALASKA3", "ALASKA4", "ALASKA5", "AUTUMN", "BAJBEACH", "CASTLE",
+            "COSTRICA", "DESERT", "DVALLEY", "EGYPT", "ELNORTE1", "ELNORTE2", "ELNORTE3",
+            "ELNORTE4", "ELNORTE5", "MEDI", "OBSPARK1", "OBSPARK2", "OBSPARK3", "OBSPARK4",
+            "OBSPARK5", "PEAK", "QUARRY", "RIVER1", "RIVER2", "RIVER3", "RIVER4", "RIVER5",
+            "SKULL1", "SKULL2", "SKULL3", "SKULL4", "SKULL5", "THAI", "TIBET", "TRIBAJA",
+            "VULTURE", "WASH1", "WASH2", "WASH3", "WASH4", "WASH5", "YUKON",
+        ]
+        .into_iter()
+        .collect();
+        let got: std::collections::BTreeSet<&str> = missing.iter().map(String::as_str).collect();
+        assert_eq!(got, expected, "levels without their own preview art");
     }
 
     use super::*;

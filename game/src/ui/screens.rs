@@ -729,15 +729,19 @@ pub fn quick_race(app: &mut App) {
         trk_card.h,
         Color::new(0.04, 0.05, 0.09, 0.92),
     );
-    // The level's own preview art; a missing file is reported, not
-    // replaced by another picture.
+    // Retail substitutes NOTRACK.RAW when a level has no 64 KiB preview
+    // (see `Assets::track_preview`), but the missing file stays visible as
+    // a label instead of passing the placeholder off as real art.
     let preview = app.assets.track_preview(&app.setup.track);
-    if preview.is_none() {
+    if !app.assets.has_own_track_preview(&app.setup.track) {
         app.ui.centered(
             trk_card.x + trk_card.w * 0.5,
             trk_card.y + trk_card.h * 0.4,
             14.0,
-            &format!("no preview: {}.RAW", app.setup.track.to_ascii_uppercase()),
+            &format!(
+                "no preview: {}.RAW (NOTRACK.RAW)",
+                app.setup.track.to_ascii_uppercase()
+            ),
             Color::new(1.0, 0.55, 0.45, 1.0),
         );
     }
