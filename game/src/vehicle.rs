@@ -484,19 +484,13 @@ pub fn load_dir(dir: &std::path::Path) -> (Vec<Truck>, Vec<String>) {
     (out, errors)
 }
 
-/// Every roster directory in load order, with the game it comes from: the
-/// Evo 1 extraction, then the Evo 2-only trucks `tools/evo2_trucks.py`
-/// imports (the Jeeps and 22 other vehicles absent from Evo 1).
-pub const ROSTER: [(&str, u8); 2] = [
-    ("assets/extracted/model/vehicle/TRUCK", 1),
-    ("assets/extracted/evo2/TRUCK", 2),
-];
+/// The roster directory and the game it comes from. Evox is 4x4 Evo 2 only,
+/// so there is a single tree: `tools/setup_evo2.py` writes it from the retail
+/// POD2 archives and every truck is tagged game 2.
+pub const ROSTER: [(&str, u8); 1] = [("assets/extracted/model/vehicle/TRUCK", 2)];
 
-/// Model directories searched for body and tyre meshes, Evo 1 first.
-pub const MODEL_DIRS: [&str; 2] = [
-    "assets/extracted/model/vehicle/MODELS",
-    "assets/extracted/evo2/MODELS",
-];
+/// Model directories searched for body and tyre meshes.
+pub const MODEL_DIRS: [&str; 1] = ["assets/extracted/model/vehicle/MODELS"];
 
 /// Find `file` in `MODEL_DIRS` under `root` (case-insensitive file name).
 pub fn find_model(root: &std::path::Path, file: &str) -> Option<std::path::PathBuf> {
@@ -681,26 +675,9 @@ mod roster_tests {
             dirs.iter()
                 .find_map(|d| std::fs::read(root.join(d).join(format!("{stem}.{ext}"))).ok())
         };
-        let raw = read(
-            &[
-                "assets/extracted/texture/texture/ART",
-            ],
-            "RAW",
-        )?;
-        let act = read(
-            &[
-                "assets/extracted/texture/palette/ART",
-                "assets/extracted/evo2/palette/ART",
-            ],
-            "ACT",
-        )?;
-        let opa = read(
-            &[
-                "assets/extracted/texture/opacity/ART",
-                "assets/extracted/evo2/opacity/ART",
-            ],
-            "OPA",
-        )?;
+        let raw = read(&["assets/extracted/texture/texture/ART"], "RAW")?;
+        let act = read(&["assets/extracted/texture/palette/ART"], "ACT")?;
+        let opa = read(&["assets/extracted/texture/opacity/ART"], "OPA")?;
         Some((raw, act, opa))
     }
 
@@ -727,14 +704,19 @@ mod roster_tests {
         require_assets!();
         let (trucks, errors) = load_roster(root());
         assert!(errors.is_empty(), "roster errors: {errors:?}");
-        assert_eq!(trucks.iter().filter(|t| t.game == 1).count(), 151);
-        assert_eq!(trucks.iter().filter(|t| t.game == 2).count(), 41);
+        assert_eq!(trucks.len(), 150, "retail 4x4 Evo 2 trucks");
+        assert!(
+            trucks.iter().all(|t| t.game == 2),
+            "every truck comes from the Evo 2 tree now"
+        );
         let names: std::collections::BTreeSet<&str> =
             trucks.iter().map(|t| t.name.as_str()).collect();
         // 108 Evo 1 names + 25 Evo 2-only. Evo 2's `MPRT2D.TRK` renames the
         // Evo 1 "Mitsubishi Pajero Rally 2 Door" to "Montero" (new body
         // TROPHYMONT); the file name collides, so the Evo 1 truck is kept.
-        assert_eq!(names.len(), 133, "unique vehicle names");
+        // 150 retail .TRK files carry 105 distinct display names: the
+        // variants (paint/parts packages) reuse the base truck's name.
+        assert_eq!(names.len(), 105, "unique vehicle names");
         for want in [
             "Jeep Wrangler Sport",
             "Jeep ARB  Wrangler",
@@ -874,9 +856,9 @@ mod roster_tests {
     }
 
     #[test]
-    fn every_evo2_model_parses() {
+    fn every_retail_model_parses() {
         require_assets!();
-        let dir = root().join("assets/extracted/evo2/MODELS");
+        let dir = root().join("assets/extracted/model/vehicle/MODELS");
         let mut n = 0;
         for e in std::fs::read_dir(dir).unwrap().flatten() {
             let text = String::from_utf8_lossy(&std::fs::read(e.path()).unwrap()).to_string();
@@ -889,7 +871,9 @@ mod roster_tests {
             );
             n += 1;
         }
-        // 110 truck models + 619 track prop models from exclusive Evo 2 tracks
-        assert_eq!(n, 729);
+        // 1350 meshes in the retail 4x4 Evo 2 MODELS pod: truck bodies, tyres
+        // and spare parts. Evo 1 shipped 729; the Evo 2 roster is the whole
+        // library now that nothing is merged on top of an Evo 1 tree.
+        assert_eq!(n, 1350);
     }
 }
