@@ -616,6 +616,14 @@ impl Assets {
         Some((w, h, rgba))
     }
 
+    /// Radial headlamp/tail-lamp flare (`FLARE.RAW` + `.OPA`), used additively.
+    pub fn flare(&mut self) -> Option<Texture2D> {
+        if let Some(t) = self.cache.get("FLARE") {
+            return Some(t.clone());
+        }
+        self.load_art("FLARE", "FLARE", true)
+    }
+
     /// Texture referenced by a vehicle or wheel SMF mesh (e.g. `BLAZZR2.RAW`).
     /// Decoded 100 % opaque (`use_opa = false`) because on vehicles `.OPA` is
     /// the paint-shift mask (`paint.rs`), never a transparency cutout. Bed

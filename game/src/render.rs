@@ -40,8 +40,16 @@ struct PreparedPart {
     transparent: bool,
 }
 
+#[derive(Clone)]
+struct PreparedLight {
+    pos: Vec3,
+    size: f32,
+    color: Color,
+}
+
 struct Prepared {
     mesh: Mesh,
+    lights: Vec<PreparedLight>,
     parts: Vec<PreparedPart>,
     lo: Vec3,
     hi: Vec3,
@@ -131,8 +139,23 @@ impl Prepared {
             });
         }
 
+        // Daytime retail keeps the headlights off; only the rear brake/tail
+        // lamps glow. Front-lamp billboards would otherwise peek over the
+        // roof from the chase camera.
+        let lights = smf
+            .light_nodes()
+            .into_iter()
+            .filter(|l| l.rear)
+            .map(|l| PreparedLight {
+                pos: l.pos,
+                size: l.size,
+                color: Color::new(1.0, 0.16, 0.10, 0.55),
+            })
+            .collect();
+
         Some(Self {
             mesh,
+            lights,
             parts,
             lo,
             hi,
@@ -229,6 +252,7 @@ pub struct Renderer {
     cutout_material: MaterialSlot,
     sky_material: MaterialSlot,
     water_material: MaterialSlot,
+    flare_material: MaterialSlot,
 }
 
 impl Renderer {
@@ -287,7 +311,8 @@ impl Renderer {
         } else {
             &mut self.opaque_material
         };
-        let Some(m) = get_or_create_world_material(slot, true, miniquad::Comparison::LessOrEqual)
+        let Some(m) =
+            get_or_create_world_material(slot, true, miniquad::Comparison::LessOrEqual, false)
         else {
             return false;
         };
@@ -305,6 +330,24 @@ impl Renderer {
         gl_use_default_material();
     }
 
+    /// Additive, non-depth-writing material for lamp flares.
+    pub fn bind_flare_material(&mut self) -> bool {
+        let cam = self.cam_pos;
+        let Some(m) = get_or_create_world_material(
+            &mut self.flare_material,
+            false,
+            miniquad::Comparison::LessOrEqual,
+            true,
+        ) else {
+            return false;
+        };
+        m.set_uniform("FogColor", Vec4::new(0.0, 0.0, 0.0, 0.0));
+        m.set_uniform("FogCam", Vec4::new(cam.x, cam.y, cam.z, 1.0));
+        m.set_uniform("FogParams", Vec4::new(0.0, 0.0, 0.0, 0.0));
+        gl_use_material(m);
+        true
+    }
+
     /// Bind the depth-tested translucent material with `alpha_blend = (Zero, One)`
     /// so translucent 3D geometry (blob shadows, water, waypoint beams) preserves
     /// an opaque framebuffer alpha channel.
@@ -315,6 +358,7 @@ impl Renderer {
             &mut self.water_material,
             true,
             miniquad::Comparison::LessOrEqual,
+            false,
         ) else {
             return false;
         };
@@ -458,6 +502,7 @@ impl Renderer {
             &mut self.sky_material,
             false,
             miniquad::Comparison::Always,
+            false,
         ) {
             m.set_uniform(
                 "FogColor",
@@ -549,6 +594,7 @@ impl Renderer {
             &mut self.water_material,
             true,
             miniquad::Comparison::LessOrEqual,
+            false,
         ) {
             m.set_uniform("FogColor", Vec4::new(fc.r, fc.g, fc.b, 1.0));
             m.set_uniform("FogCam", Vec4::new(cam_pos.x, cam_pos.y, cam_pos.z, 1.0));
@@ -578,7 +624,11 @@ impl Renderer {
             .collect();
         wheel_order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let use_fog = self.fog_end > self.fog_start && self.bind_world_material(false);
+        // Always bind the alpha-capable world material for the truck. It used
+        // to be bound only when fog was active, so clear-weather races fell
+        // back to macroquad's default material and the smoked glazing lost
+        // its per-vertex alpha (rendering as solid black).
+        let used = self.bind_world_material(false);
 
         // 1. Far wheels (behind the chassis relative to camera).
         for &(i, d) in &wheel_order {
@@ -588,6 +638,7 @@ impl Renderer {
             self.draw_one_wheel(assets, v, i, basis, scale, cam);
         }
         // 2. Chassis body (triangles painter-sorted back-to-front).
+        let mut lights = Vec::new();
         if let Some(key) = self.body_key(assets, &base, v.truck.paint()) {
             if let Some(model) = model_mesh(&self.cache, &key) {
                 draw_scratch(
@@ -599,6 +650,7 @@ impl Renderer {
                     WHITE,
                     cam,
                 );
+                lights = model.lights.clone();
             }
         }
         // 3. Near wheels (in front of the chassis relative to camera).
@@ -608,8 +660,16 @@ impl Renderer {
             }
             self.draw_one_wheel(assets, v, i, basis, scale, cam);
         }
-        if use_fog {
+        if used {
             self.unbind_world_material();
+        }
+        if !lights.is_empty() {
+            if let Some(tex) = assets.flare() {
+                if self.bind_flare_material() {
+                    draw_flares(&mut self.scratch, &lights, v.pos, basis, scale, cam, &tex);
+                    self.unbind_world_material();
+                }
+            }
         }
     }
 
@@ -755,6 +815,7 @@ impl Renderer {
                 }
             }
         }
+        let mut lights = Vec::new();
         if let Some(key) = self.body_key(assets, &truck.model_base, truck.paint()) {
             if let Some(model) = model_mesh(&self.cache, &key) {
                 draw_scratch(
@@ -766,6 +827,7 @@ impl Renderer {
                     WHITE,
                     eye,
                 );
+                lights = model.lights.clone();
             }
         }
         for &(_axle, side, w_pos, d) in &wheels {
@@ -782,12 +844,92 @@ impl Renderer {
         if lit {
             self.unbind_world_material();
         }
+        if !lights.is_empty() {
+            if let Some(tex) = assets.flare() {
+                if self.bind_flare_material() {
+                    draw_flares(&mut self.scratch, &lights, body_pos, basis, 1.0, eye, &tex);
+                    self.unbind_world_material();
+                }
+            }
+        }
     }
 
     pub fn model_length(&mut self, assets: &mut Assets, base: &str) -> Option<f32> {
         let key = self.body_key(assets, base, None)?;
         model_mesh(&self.cache, &key).map(|m| m.length())
     }
+}
+
+/// Camera-facing additive lamp flares (`FLARE.RAW`), one quad per `Light*`
+/// node. Depth writes are disabled by the flare material so halos stack and
+/// glow without occluding the body.
+fn draw_flares(
+    scratch: &mut Scratch,
+    lights: &[PreparedLight],
+    base: Vec3,
+    basis: Quat,
+    scale: f32,
+    cam: Vec3,
+    tex: &Texture2D,
+) {
+    scratch.vertices.clear();
+    scratch.indices.clear();
+    for l in lights {
+        let anchor = base + basis * (l.pos * scale);
+        let view = (cam - anchor).normalize_or_zero();
+        let view = if view.length_squared() < 1e-6 {
+            Vec3::Z
+        } else {
+            view
+        };
+        // Nudge the billboard towards the camera so the bumper/frame does not
+        // depth-clip half of the halo at grazing angles. Depth testing stays
+        // on, so rear glows still cannot show through the truck from the front.
+        let p = anchor + view * 0.06;
+        let mut right = view.cross(Vec3::Y);
+        if right.length_squared() < 1e-6 {
+            right = Vec3::X;
+        }
+        right = right.normalize();
+        let up = right.cross(view).normalize_or_zero();
+        let s = (l.size * scale).max(0.12);
+        let c = [
+            (l.color.r * 255.0) as u8,
+            (l.color.g * 255.0) as u8,
+            (l.color.b * 255.0) as u8,
+            (l.color.a * 255.0) as u8,
+        ];
+        let base_i = scratch.vertices.len() as u16;
+        for (dx, dy, u, v) in [
+            (-1.0, -1.0, 0.0, 1.0),
+            (1.0, -1.0, 1.0, 1.0),
+            (1.0, 1.0, 1.0, 0.0),
+            (-1.0, 1.0, 0.0, 0.0),
+        ] {
+            scratch.vertices.push(Vertex {
+                position: p + right * (dx * s) + up * (dy * s),
+                uv: vec2(u, v),
+                color: c,
+                normal: Vec4::new(view.x, view.y, view.z, 0.0),
+            });
+        }
+        scratch.indices.extend_from_slice(&[
+            base_i,
+            base_i + 1,
+            base_i + 2,
+            base_i,
+            base_i + 2,
+            base_i + 3,
+        ]);
+    }
+    let mesh = Mesh {
+        vertices: std::mem::take(&mut scratch.vertices),
+        indices: std::mem::take(&mut scratch.indices),
+        texture: Some(tex.clone()),
+    };
+    draw_mesh(&mesh);
+    scratch.vertices = mesh.vertices;
+    scratch.indices = mesh.indices;
 }
 
 /// Transform `mesh` into `scratch` and draw it in world space, painter-sorted
@@ -877,6 +1019,7 @@ fn get_or_create_world_material(
     mat: &mut MaterialSlot,
     depth_write: bool,
     depth_test: miniquad::Comparison,
+    additive: bool,
 ) -> Option<&Material> {
     if mat.0.is_none() {
         let ctx = unsafe { macroquad::window::get_internal_gl().quad_context };
@@ -996,7 +1139,11 @@ fragment float4 fragmentShader(RasterizerData in [[stage_in]],
                 color_blend: Some(miniquad::BlendState::new(
                     miniquad::Equation::Add,
                     miniquad::BlendFactor::Value(miniquad::BlendValue::SourceAlpha),
-                    miniquad::BlendFactor::OneMinusValue(miniquad::BlendValue::SourceAlpha),
+                    if additive {
+                        miniquad::BlendFactor::One
+                    } else {
+                        miniquad::BlendFactor::OneMinusValue(miniquad::BlendValue::SourceAlpha)
+                    },
                 )),
                 alpha_blend: Some(miniquad::BlendState::new(
                     miniquad::Equation::Add,

@@ -12,6 +12,13 @@ use macroquad::prelude::*;
 
 use crate::vehicle::FT;
 
+#[derive(Clone, Copy, Debug)]
+pub struct LightNode {
+    pub pos: Vec3,
+    pub size: f32,
+    pub rear: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SmfMesh {
     pub name: String,
@@ -205,6 +212,34 @@ impl Smf {
     /// are excluded, while pickup bed liners (`bedcovr`), dark interiors, and
     /// smoked cabin glass (`glassi`/`glasse`) are included with opaque body and
     /// dark interior backfaces so the vehicle never looks hollow or see-through.
+    /// Light nodes for additive flares. Retail trucks carry `Light*` quads
+    /// textured from the body sheet; the original draws a glow at each lamp
+    /// instead of the flat red/white panel.
+    pub fn light_nodes(&self) -> Vec<LightNode> {
+        let mut out = Vec::new();
+        for m in &self.meshes {
+            if m.lod_min > 0.1
+                || !m.name.to_ascii_lowercase().starts_with("light")
+                || m.positions.is_empty()
+            {
+                continue;
+            }
+            let (mut lo, mut hi) = (m.positions[0], m.positions[0]);
+            for p in &m.positions {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+            let centre = (lo + hi) * 0.5;
+            let size = ((hi - lo).max_element() * 0.12).clamp(0.10, 0.34);
+            out.push(LightNode {
+                pos: centre,
+                size,
+                rear: centre.z < 0.0,
+            });
+        }
+        out
+    }
+
     pub fn merged_mesh(&self, texture: Option<Texture2D>, glass: Option<&[Vec<bool>]>) -> Mesh {
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u16> = Vec::new();
@@ -234,7 +269,11 @@ impl Smf {
             .any(|k| low.starts_with(k));
             let is_glass = low.starts_with("glass");
             let is_light = low.starts_with("light");
-            if is_addon || (!m.opaque && !is_glass && !is_light) {
+            // Lamp quads become additive flares, not body geometry.
+            if is_light {
+                continue;
+            }
+            if is_addon || (!m.opaque && !is_glass) {
                 continue;
             }
             // Sub-meshes normally share the body's palette texture, but bed
@@ -260,10 +299,12 @@ impl Smf {
                 let n = m.normals.get(i).copied().unwrap_or(Vec3::Y);
                 let pane = glass_flags.and_then(|g| g.get(i)).copied().unwrap_or(false);
                 let vcolor = if is_glass && pane {
+                    // Smoked glazing: keep the tint but leave enough
+                    // transmission that the cabin/sky reads through it.
                     if low.starts_with("glassi") {
-                        [22, 26, 32, 220]
+                        [24, 30, 40, 170]
                     } else {
-                        [40, 46, 56, 218]
+                        [48, 60, 78, 150]
                     }
                 } else if low.starts_with("cockpit") || low.starts_with("undbody") {
                     [24, 26, 29, 255]
@@ -285,10 +326,7 @@ impl Smf {
             // Emit solid dark charcoal interior backfaces for the main shell,
             // pickup bed and cabin glass so openings or windows never expose
             // sky/terrain through the truck.
-            if low.starts_with("body")
-                || low.starts_with("bedcovr")
-                || (is_glass && glass_flags.is_some())
-            {
+            if low.starts_with("body") || low.starts_with("bedcovr") {
                 let back_base = vertices.len() as u16;
                 // The interior shell must clear the outer skin by more than the
                 // depth-buffer resolution at chase distance, otherwise it wins
@@ -415,6 +453,28 @@ mod tests {
     }
 
     #[test]
+    fn light_meshes_become_flare_nodes_not_body_geometry() {
+        let smf = "C3DModel\r\n4\r\n2\r\n0,50\r\n\
+Body\r\n1\r\n1\r\n3,1,1,0\r\nv1\r\n\
+1,1,64,0,1,T.TIF\r\n\"T_bump.TIF\"\r\n\
+-1,0,0,0,1,0,0,0\r\n1,0,0,0,1,0,1,0\r\n0,1,-1,0,1,0,0.5,0.5\r\n0,1,2\r\n\
+LightBR\r\n1\r\n1\r\n3,1,1,0\r\nv1\r\n\
+1,1,32,0,1,T.TIF\r\n\"T_bump.TIF\"\r\n\
+-2,0,-8,0,0,-1,0,0\r\n-1,0,-8,0,0,-1,1,0\r\n-1,1,-8,0,0,-1,1,1\r\n0,1,2\r\n";
+        let s = Smf::parse(smf).unwrap();
+        let nodes = s.light_nodes();
+        assert_eq!(nodes.len(), 1);
+        assert!(nodes[0].rear, "LightBR sits behind the rear axle");
+        assert!((nodes[0].pos.z + 8.0 * FT).abs() < 0.01);
+        assert!(nodes[0].size > 0.0 && nodes[0].size <= 0.34);
+
+        let mesh = s.merged_mesh(None, None);
+        // Body (3 verts) + its dark backfaces (3). The Light* quad must not
+        // contribute three more vertices to the body mesh.
+        assert_eq!(mesh.vertices.len(), 6);
+    }
+
+    #[test]
     fn transparent_descriptor_is_detected() {
         let t = SMF.replace("Body", "TRANSP");
         let s = Smf::parse(&t).unwrap();
@@ -479,12 +539,12 @@ mod tests {
             "dark interior backfaces must be present and opaque"
         );
         assert!(
-            mesh.vertices.iter().any(|v| v.color == [40, 46, 56, 218]),
-            "exterior smoked glass tint must be included"
+            mesh.vertices.iter().any(|v| v.color == [48, 60, 78, 150]),
+            "exterior smoked glass tint must be included and translucent"
         );
         assert!(
-            mesh.vertices.iter().all(|v| v.color[3] >= 218),
-            "no vehicle vertex may be nearly transparent"
+            mesh.vertices.iter().all(|v| v.color[3] >= 150),
+            "no vehicle vertex may be nearly invisible"
         );
         // Without a pane mask the glass shell keeps the body colour opaque, so
         // a roof that shares the `glasse` mesh is not blacked out.
