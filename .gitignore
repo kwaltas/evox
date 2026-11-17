@@ -20,6 +20,7 @@
 /target/
 /assets/manifest.json
 /assets/install.json
+/assets/hd_override/
 /assets/ui
 /assets/vehicles
 /assets/tracks

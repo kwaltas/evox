@@ -49,6 +49,7 @@ struct PreparedLight {
 
 struct Prepared {
     mesh: Mesh,
+    gloss: Option<Mesh>,
     lights: Vec<PreparedLight>,
     parts: Vec<PreparedPart>,
     lo: Vec3,
@@ -142,6 +143,9 @@ impl Prepared {
         // Daytime retail keeps the headlights off; only the rear brake/tail
         // lamps glow. Front-lamp billboards would otherwise peek over the
         // roof from the chase camera.
+        let gloss = (!is_prop)
+            .then(|| smf.gloss_mesh(glass.as_deref()))
+            .flatten();
         let lights = smf
             .light_nodes()
             .into_iter()
@@ -155,6 +159,7 @@ impl Prepared {
 
         Some(Self {
             mesh,
+            gloss,
             lights,
             parts,
             lo,
@@ -650,6 +655,9 @@ impl Renderer {
                     WHITE,
                     cam,
                 );
+                if let Some(gloss) = &model.gloss {
+                    draw_scratch(&mut self.scratch, gloss, v.pos, basis, 1.0, WHITE, cam);
+                }
                 lights = model.lights.clone();
             }
         }
@@ -827,6 +835,9 @@ impl Renderer {
                     WHITE,
                     eye,
                 );
+                if let Some(gloss) = &model.gloss {
+                    draw_scratch(&mut self.scratch, gloss, body_pos, basis, 1.0, WHITE, eye);
+                }
                 lights = model.lights.clone();
             }
         }

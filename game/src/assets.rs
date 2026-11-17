@@ -6,6 +6,7 @@
 //! runs.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use macroquad::prelude::*;
@@ -15,6 +16,8 @@ use crate::terrain::Track;
 
 pub const ART_DIR: &str = "assets/extracted/texture/ui/ART";
 pub const SOUND_DIR: &str = "assets/extracted/audio/sfx/SOUND";
+/// User-supplied HD texture pack (loose PNG/JPG or the retail zip packs).
+pub const HD_OVERRIDE_DIR: &str = "assets/hd_override";
 /// User-edited tracks live here, never in `assets/extracted`. The asset
 /// resolution checks this first so the retail tree stays read-only.
 pub const CUSTOM_TRACKS_DIR: &str = "assets/custom_tracks";
@@ -36,6 +39,143 @@ pub const TEX_OPACITY_DIR: &str = "assets/extracted/texture/opacity/ART";
 use std::sync::OnceLock;
 
 static ART_DIR_CACHE: OnceLock<HashMap<&'static str, HashMap<String, PathBuf>>> = OnceLock::new();
+
+#[derive(Default)]
+struct HdIndex {
+    direct: HashMap<String, PathBuf>,
+    zipped: HashMap<String, (PathBuf, String)>,
+}
+
+static HD_INDEX: OnceLock<HdIndex> = OnceLock::new();
+
+fn hd_ext_rank(path: &str) -> u8 {
+    let e = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match e.as_str() {
+        "png" => 3,
+        "jpg" | "jpeg" => 2,
+        _ => 0,
+    }
+}
+
+fn hd_insert(map: &mut HashMap<String, PathBuf>, path: PathBuf) {
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return;
+    };
+    let key = stem.to_ascii_lowercase();
+    let rank = hd_ext_rank(path.to_string_lossy().as_ref());
+    if rank == 0 {
+        return;
+    }
+    let replace = map
+        .get(&key)
+        .map(|old| hd_ext_rank(old.to_string_lossy().as_ref()) < rank)
+        .unwrap_or(true);
+    if replace {
+        map.insert(key, path);
+    }
+}
+
+fn hd_scan_direct(dir: &Path, depth: usize, map: &mut HashMap<String, PathBuf>) {
+    if depth > 3 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            hd_scan_direct(&p, depth + 1, map);
+        } else {
+            hd_insert(map, p);
+        }
+    }
+}
+
+fn hd_index() -> &'static HdIndex {
+    HD_INDEX.get_or_init(|| {
+        let mut idx = HdIndex::default();
+        hd_scan_direct(Path::new(HD_OVERRIDE_DIR), 0, &mut idx.direct);
+        let Ok(rd) = std::fs::read_dir(HD_OVERRIDE_DIR) else {
+            return idx;
+        };
+        for e in rd.flatten() {
+            let path = e.path();
+            if !path
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("zip"))
+            {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            let Ok(mut zip) = zip::ZipArchive::new(file) else {
+                continue;
+            };
+            let mut found = Vec::new();
+            for i in 0..zip.len() {
+                let Ok(entry) = zip.by_index(i) else {
+                    continue;
+                };
+                if !entry.is_file() {
+                    continue;
+                }
+                let Ok(full) = entry.name() else { continue };
+                let name = full.rsplit('/').next().unwrap_or("").to_string();
+                if hd_ext_rank(&name) > 0 {
+                    let stem = Path::new(&name)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    found.push((stem, name));
+                }
+            }
+            for (stem, name) in found {
+                let rank = hd_ext_rank(&name);
+                let replace = idx
+                    .zipped
+                    .get(&stem)
+                    .map(|(_, old)| hd_ext_rank(old.as_str()) < rank)
+                    .unwrap_or(true);
+                if replace {
+                    idx.zipped.insert(stem, (path.clone(), name));
+                }
+            }
+        }
+        idx
+    })
+}
+
+fn hd_bytes(stem: &str) -> Option<Vec<u8>> {
+    let key = Path::new(stem)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(stem)
+        .to_ascii_lowercase();
+    let idx = hd_index();
+    if let Some(path) = idx.direct.get(&key) {
+        return std::fs::read(path).ok();
+    }
+    let (zip_path, entry) = idx.zipped.get(&key)?;
+    let file = std::fs::File::open(zip_path).ok()?;
+    let mut zip = zip::ZipArchive::new(file).ok()?;
+    let mut f = zip.by_name(entry).ok()?;
+    let mut out = Vec::with_capacity(f.size() as usize);
+    f.read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
+fn decode_override(bytes: &[u8]) -> Option<Texture2D> {
+    let img = Image::from_file_with_format(bytes, None).ok()?;
+    let tex = Texture2D::from_image(&img);
+    tex.set_filter(FilterMode::Linear);
+    Some(tex)
+}
 
 /// Read `stem.ext` from the overlay tree `assets/custom_tracks/*/`. The
 /// overlay is organised as one directory per track, so a modified texture for
@@ -337,6 +477,9 @@ impl Assets {
         if let Some(t) = self.cache.get(name) {
             return Some(t.clone());
         }
+        if let Some(t) = self.hd_texture(name, name) {
+            return Some(t);
+        }
         let base = Path::new(ART_DIR).join(name);
         let Ok(raw) = load_file(&format!("{}.RAW", base.display())).await else {
             return None;
@@ -389,6 +532,9 @@ impl Assets {
         if let Some(t) = self.cache.get(&key) {
             return Some(t.clone());
         }
+        if let Some(t) = self.hd_texture(&key, name) {
+            return Some(t);
+        }
         let base = Path::new(ART_DIR).join(name);
         let raw = load_file(&format!("{}.RAW", base.display())).await.ok()?;
         let act = load_file(&format!("{}.ACT", base.display())).await.ok()?;
@@ -423,6 +569,17 @@ impl Assets {
         self.cache.get(name)
     }
 
+    /// User HD override for `stem`, if a matching PNG/JPG exists loose or in
+    /// one of the staged zip packs. Returns a texture cached under `key`.
+    fn hd_texture(&mut self, key: &str, stem: &str) -> Option<Texture2D> {
+        if let Some(t) = self.cache.get(key) {
+            return Some(t.clone());
+        }
+        let tex = decode_override(&hd_bytes(stem)?)?;
+        self.cache.insert(key.to_string(), tex.clone());
+        Some(tex)
+    }
+
     /// Decode a game texture (`.RAW` + palette `.ACT` + optional `.OPA`
     /// opacity) from the shared art directories. Synchronous because these are
     /// small and already on disk.
@@ -432,6 +589,9 @@ impl Assets {
             .and_then(|s| s.to_str())
             .unwrap_or(stem)
             .to_ascii_uppercase();
+        if let Some(t) = self.hd_texture(key, &stem) {
+            return Some(t);
+        }
         let pixels = art_bytes(&stem, "RAW")?;
         let act = art_bytes(&stem, "ACT")?;
         if act.len() < 768 {
@@ -457,6 +617,10 @@ impl Assets {
     /// Interface art (`texture/ui/ART`), whose palette and opacity masks sit
     /// beside the pixels rather than in the shared texture libraries.
     fn load_ui_art(&mut self, key: &str, stem: &str, alpha: bool) {
+        if let Some(t) = self.hd_texture(key, stem) {
+            self.cache.insert(key.to_string(), t);
+            return;
+        }
         let base = Path::new(ART_DIR).join(stem);
         let Ok(pixels) = std::fs::read(base.with_extension("RAW")) else {
             return;
@@ -653,6 +817,9 @@ impl Assets {
         if let Some(t) = self.cache.get(&key) {
             return Some(t.clone());
         }
+        if let Some(t) = self.hd_texture(&key, &name) {
+            return Some(t);
+        }
         let pixels = art_bytes(&name, "RAW")?;
         let act = art_bytes(&name, "ACT")?;
         if act.len() < 768 {
@@ -674,6 +841,9 @@ impl Assets {
         let (name, key) = self.prop_key(stem, "#cut");
         if let Some(t) = self.cache.get(&key) {
             return Some(t.clone());
+        }
+        if let Some(t) = self.hd_texture(&key, &name) {
+            return Some(t);
         }
         let pixels = art_bytes(&name, "RAW")?;
         let act = art_bytes(&name, "ACT")?;
@@ -717,6 +887,9 @@ impl Assets {
         let key = format!("VEH#{name}#{}", paint.key());
         if let Some(t) = self.cache.get(&key) {
             return Some(t.clone());
+        }
+        if let Some(t) = self.hd_texture(&key, &name) {
+            return Some(t);
         }
         let pixels = art_bytes(&name, "RAW")?;
         let act = art_bytes(&name, "ACT")?;

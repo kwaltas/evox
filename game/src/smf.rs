@@ -240,6 +240,62 @@ impl Smf {
         out
     }
 
+    /// Smoked-glass sheen for dark texture regions on the body/cockpit that
+    /// are not covered by a `Glass*` mesh (the Montero rear pane is painted
+    /// into the body sheet). Only triangles whose three vertices sample a
+    /// dark texture pixel are emitted, slightly above the body surface.
+    pub fn gloss_mesh(&self, glass: Option<&[Vec<bool>]>) -> Option<Mesh> {
+        let flags = glass?;
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        for (mi, m) in self.meshes.iter().enumerate() {
+            let low = m.name.to_ascii_lowercase();
+            if m.lod_min > 0.1
+                || !(low.starts_with("body") || low.starts_with("cockpit"))
+                || m.positions.is_empty()
+            {
+                continue;
+            }
+            let Some(panes) = flags.get(mi) else { continue };
+            if panes.len() != m.positions.len() {
+                continue;
+            }
+            if vertices.len() + m.positions.len() >= u16::MAX as usize {
+                continue;
+            }
+            let base = vertices.len() as u16;
+            for (i, p) in m.positions.iter().enumerate() {
+                let n = m.normals.get(i).copied().unwrap_or(Vec3::Y);
+                vertices.push(Vertex {
+                    position: *p + n * 0.012,
+                    uv: m.uvs.get(i).copied().unwrap_or_default(),
+                    // Smoked blue-grey sheen; alpha keeps the black paint
+                    // beneath from reading as a hole.
+                    color: [104, 126, 152, 150],
+                    normal: Vec4::new(n.x, n.y, n.z, 0.0),
+                });
+            }
+            for c in m.indices.chunks_exact(3) {
+                if c.iter()
+                    .all(|&i| panes.get(i as usize).copied().unwrap_or(false))
+                {
+                    indices.push(base + c[0]);
+                    indices.push(base + c[1]);
+                    indices.push(base + c[2]);
+                }
+            }
+        }
+        if indices.is_empty() {
+            None
+        } else {
+            Some(Mesh {
+                vertices,
+                indices,
+                texture: None,
+            })
+        }
+    }
+
     pub fn merged_mesh(&self, texture: Option<Texture2D>, glass: Option<&[Vec<bool>]>) -> Mesh {
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u16> = Vec::new();
@@ -472,6 +528,12 @@ LightBR\r\n1\r\n1\r\n3,1,1,0\r\nv1\r\n\
         // Body (3 verts) + its dark backfaces (3). The Light* quad must not
         // contribute three more vertices to the body mesh.
         assert_eq!(mesh.vertices.len(), 6);
+
+        let panes = vec![vec![true; 3], vec![false; 3]];
+        let gloss = s.gloss_mesh(Some(&panes)).expect("body pane sheen");
+        assert_eq!(gloss.vertices.len(), 3);
+        assert_eq!(gloss.indices.len(), 3);
+        assert_eq!(gloss.vertices[0].color[3], 150);
     }
 
     #[test]
