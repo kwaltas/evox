@@ -40,3 +40,4 @@ __pycache__/
 
 # The built-in synthetic test rig is original source data, not retail data.
 !game/src/selftest_truck.trk
+assets/hd_override/
