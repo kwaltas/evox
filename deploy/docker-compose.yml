@@ -1,0 +1,46 @@
+name: evox
+
+services:
+  master:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.master
+    restart: unless-stopped
+    command: ["--bind", "0.0.0.0:8790", "--ttl", "45"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  leaderboard:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.leaderboard
+    restart: unless-stopped
+    volumes:
+      - lb-data:/data
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [master, leaderboard]
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  watchdog:
+    image: alpine:3.20
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./watchdog.sh:/watchdog.sh:ro
+    entrypoint: ["/bin/sh", "/watchdog.sh"]
+
+volumes:
+  lb-data:
+  caddy-data:
+  caddy-config:

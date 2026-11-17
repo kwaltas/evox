@@ -1,0 +1,20 @@
+# Replace evox.example.com before deploying.
+evox.example.com {
+	encode gzip
+	handle /lobbies* {
+		reverse_proxy master:8790
+	}
+	handle /register* {
+		reverse_proxy master:8790
+	}
+	handle /health {
+		reverse_proxy master:8790
+	}
+	handle /records* {
+		reverse_proxy leaderboard:8791
+	}
+	handle /top* {
+		reverse_proxy leaderboard:8791
+	}
+	respond "EvoX services" 200
+}

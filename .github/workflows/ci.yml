@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main, evo2-only]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux GL deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev
+
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Extractor self-test
+        run: python3 tools/pod.py --self-test
+      - name: Packer round-trip
+        shell: bash
+        run: |
+          mkdir -p /tmp/fx/vehicles
+          cp assets/vehicles/_selftest.trk /tmp/fx/vehicles/T.TRK
+          python3 tools/podpack.py /tmp/fx /tmp/fx.pod --compress
+          python3 tools/pod.py /tmp/fx.pod -o /tmp/fxout
+          cmp /tmp/fx/vehicles/T.TRK /tmp/fxout/model/vehicle/vehicles/T.TRK
+
+      - name: Fast self-test
+        run: cargo run -p evox -- --self-test 0

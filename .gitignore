@@ -19,6 +19,7 @@
 # ── Local extraction / build output ──────────────────────────────────────────
 /target/
 /assets/manifest.json
+/assets/install.json
 /assets/ui
 /assets/vehicles
 /assets/tracks

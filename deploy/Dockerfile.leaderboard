@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+FROM rust:1-slim AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY server/Cargo.toml server/
+COPY leaderboard/Cargo.toml leaderboard/
+COPY game/Cargo.toml game/
+RUN mkdir -p game/src && echo "fn main(){}" > game/src/main.rs
+COPY leaderboard/src leaderboard/src
+RUN cargo build --release -p evox-leaderboard && mkdir -p /out && cp target/release/evox-leaderboard /out/
+
+FROM debian:bookworm-slim
+RUN useradd -r -u 10001 evox
+COPY --from=build /out/evox-leaderboard /usr/local/bin/evox-leaderboard
+USER evox
+WORKDIR /data
+EXPOSE 8791
+ENTRYPOINT ["/usr/local/bin/evox-leaderboard", "--file", "/data/leaderboard.json"]
