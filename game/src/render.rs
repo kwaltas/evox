@@ -348,7 +348,9 @@ impl Renderer {
         };
         m.set_uniform("FogColor", Vec4::new(0.0, 0.0, 0.0, 0.0));
         m.set_uniform("FogCam", Vec4::new(cam.x, cam.y, cam.z, 1.0));
-        m.set_uniform("FogParams", Vec4::new(0.0, 0.0, 0.0, 0.0));
+        // 0.5 = translucent: multiply by the texture alpha (smooth flare
+        // falloff) without the hard 0.5 cutout used by foliage props.
+        m.set_uniform("FogParams", Vec4::new(0.0, 0.0, 0.6, 0.0));
         gl_use_material(m);
         true
     }
@@ -1068,7 +1070,7 @@ uniform mediump vec4 FogParams;
 
 void main() {
     lowp vec4 tex = texture2D(Texture, uv);
-    if (FogParams.z > 0.5 && tex.a < 0.5) {
+    if (FogParams.z > 0.9 && tex.a < 0.5) {
         discard;
     }
     mediump float fog_f = (FogParams.y > FogParams.x)
@@ -1129,7 +1131,7 @@ fragment float4 fragmentShader(RasterizerData in [[stage_in]],
                                sampler texSmplr [[sampler(0)]])
 {
     float4 t = tex.sample(texSmplr, in.uv);
-    if (uniforms.FogParams.z > 0.5 && t.a < 0.5) {
+    if (uniforms.FogParams.z > 0.9 && t.a < 0.5) {
         discard_fragment();
     }
     float fog_f = (uniforms.FogParams.y > uniforms.FogParams.x)

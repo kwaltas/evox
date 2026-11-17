@@ -583,7 +583,7 @@ impl Assets {
         if low.starts_with("bg_")
             || matches!(
                 low.as_str(),
-                "4x4font" | "ui_small" | "ui_tiny" | "fnto_400" | "fnto_200"
+                "4x4font" | "ui_small" | "ui_tiny" | "fnto_400" | "fnto_200" | "flare" | "flare2"
             )
         {
             return None;
