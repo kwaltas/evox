@@ -575,6 +575,19 @@ impl Assets {
         if let Some(t) = self.cache.get(key) {
             return Some(t.clone());
         }
+        let low = stem.to_ascii_lowercase();
+        // The bitmap font is a paired texture + OPA glyph-mask atlas; a flat
+        // HD PNG has no metrics and turns every label into white blocks.
+        // Menu backgrounds are likewise already produced by the native ui2
+        // pass and must keep their blue retail layout.
+        if low.starts_with("bg_")
+            || matches!(
+                low.as_str(),
+                "4x4font" | "ui_small" | "ui_tiny" | "fnto_400" | "fnto_200"
+            )
+        {
+            return None;
+        }
         let tex = decode_override(&hd_bytes(stem)?)?;
         self.cache.insert(key.to_string(), tex.clone());
         Some(tex)

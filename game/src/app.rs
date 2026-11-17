@@ -56,6 +56,8 @@ pub struct RaceSetup {
     pub opt: u8,
     /// Factory paint for the player's truck (`colorList[]` index).
     pub paint: usize,
+    /// Quick Race manufacturer filter: 0 = All, then index into the makes.
+    pub brand: usize,
 }
 
 pub struct App {

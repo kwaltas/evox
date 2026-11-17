@@ -527,7 +527,24 @@ pub fn quick_race(app: &mut App) {
     let pw = sw * 0.40;
 
     // ---- session panel --------------------------------------------------
-    let catalog: Vec<crate::vehicle::Truck> = app.garage_files().into_iter().cloned().collect();
+    // Manufacturer filter. The make comes from `truckMake` in the .TRK file.
+    let mut brands = vec!["All".to_string()];
+    let mut seen = std::collections::BTreeSet::new();
+    for t in app.garage_files() {
+        let m = t.make.trim();
+        if !m.is_empty() && seen.insert(m.to_ascii_lowercase()) {
+            brands.push(m.to_string());
+        }
+    }
+    brands[1..].sort_by_key(|b| b.to_ascii_lowercase());
+    app.setup.brand = app.setup.brand.min(brands.len() - 1);
+    let brand = brands[app.setup.brand].clone();
+    let catalog: Vec<crate::vehicle::Truck> = app
+        .garage_files()
+        .into_iter()
+        .filter(|t| app.setup.brand == 0 || t.make.eq_ignore_ascii_case(&brand))
+        .cloned()
+        .collect();
     // Preview cards at top of right panel (`list_y .. list_y + 150.0`),
     // Vehicle cycler at `list_y + 180.0`, session rows below, Start button at
     // the bottom. The layout is derived top-down so the panel height follows
@@ -537,11 +554,15 @@ pub fn quick_race(app: &mut App) {
     // clears the footer.
     let row_pitch = if sh < 700.0 { 30.0 } else { 38.0 };
     let start_h = if sh < 700.0 { 40.0 } else { 48.0 };
-    let veh_bar_y = list_y + 180.0;
+    let brand_y = list_y + 150.0;
+    let veh_bar_y = list_y + 204.0;
     let mut opt_y = veh_bar_y + 66.0;
-    let mut opt_hit: Vec<Rect> = vec![Rect::new(px, veh_bar_y, pw, 56.0)];
-    // 1 class, 2 laps, 3 rivals, 4 paint; 5 is START RACE.
-    for _ in 1..5 {
+    // 0 vehicle, 1 brand, 2 class, 3 laps, 4 rivals, 5 paint; 6 is START.
+    let mut opt_hit: Vec<Rect> = vec![
+        Rect::new(px, veh_bar_y, pw, 56.0),
+        Rect::new(px, brand_y, pw, 26.0),
+    ];
+    for _ in 0..4 {
         opt_hit.push(Rect::new(px, opt_y, pw, 32.0));
         opt_y += row_pitch;
     }
@@ -570,7 +591,7 @@ pub fn quick_race(app: &mut App) {
 
     let mut adjust: Option<i32> = None;
     let mut confirm = false;
-    app.setup.opt = app.setup.opt.min(5);
+    app.setup.opt = app.setup.opt.min(6);
     let list_focus = app.setup.focus == 0;
 
     // ---- keyboard -------------------------------------------------------
@@ -603,18 +624,18 @@ pub fn quick_race(app: &mut App) {
     } else {
         if up || down {
             let d = if down { 1 } else { -1 };
-            app.setup.opt = (app.setup.opt as i32 + d).rem_euclid(6) as u8;
+            app.setup.opt = (app.setup.opt as i32 + d).rem_euclid(7) as u8;
             app.audio.ui_move(get_time());
         }
         if left || right {
-            if app.setup.opt == 5 {
+            if app.setup.opt == 6 {
                 confirm = right;
             } else {
                 adjust = Some(if right { 1 } else { -1 });
             }
         }
         if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
-            if app.setup.opt == 5 {
+            if app.setup.opt == 6 {
                 confirm = true;
             } else {
                 adjust = Some(1);
@@ -629,15 +650,22 @@ pub fn quick_race(app: &mut App) {
                 app.audio.ui_move(get_time());
             }
             1 => {
-                app.setup.class = (app.setup.class as i32 + d).clamp(1, 5) as u8;
+                let n = brands.len() as i32;
+                app.setup.brand = (app.setup.brand as i32 + d).rem_euclid(n) as usize;
+                app.selected_truck = 0;
+                app.setup.paint = 0;
+                app.audio.ui_move(get_time());
             }
             2 => {
-                app.setup.laps = (app.setup.laps as i32 + d).clamp(1, 5) as u32;
+                app.setup.class = (app.setup.class as i32 + d).clamp(1, 5) as u8;
             }
             3 => {
-                app.setup.opponents = (app.setup.opponents as i32 + d).clamp(1, 7) as usize;
+                app.setup.laps = (app.setup.laps as i32 + d).clamp(1, 5) as u32;
             }
             4 => {
+                app.setup.opponents = (app.setup.opponents as i32 + d).clamp(1, 7) as usize;
+            }
+            5 => {
                 let n = catalog
                     .get(app.selected_truck)
                     .map_or(0, |t| t.paints.len()) as i32;
@@ -905,6 +933,47 @@ pub fn quick_race(app: &mut App) {
         );
     }
 
+    // ---- manufacturer filter -------------------------------------------
+    let bsel = !list_focus && app.setup.opt == 1;
+    let br = opt_hit[1];
+    draw_rectangle(br.x, br.y, br.w, br.h, Color::new(0.06, 0.08, 0.15, 0.92));
+    draw_rectangle_lines(
+        br.x,
+        br.y,
+        br.w,
+        br.h,
+        1.0,
+        if bsel {
+            MENU_SEL
+        } else {
+            Color::new(0.5, 0.58, 0.78, 0.6)
+        },
+    );
+    text(
+        &app.ui,
+        &format!("Brand  {brand}"),
+        br.x + 38.0,
+        br.y + 18.0,
+        16.0,
+        if bsel { MENU_SEL } else { MENU_HEAD },
+    );
+    let bl = Rect::new(br.x + 4.0, br.y + 3.0, 28.0, br.h - 6.0);
+    let brr = Rect::new(br.x + br.w - 32.0, br.y + 3.0, 28.0, br.h - 6.0);
+    if app.ui.button(&app.assets, bl, "<", bsel, true) {
+        let n = brands.len() as i32;
+        app.setup.brand = (app.setup.brand as i32 - 1).rem_euclid(n) as usize;
+        app.selected_truck = 0;
+        app.setup.paint = 0;
+        app.audio.ui_move(get_time());
+    }
+    if app.ui.button(&app.assets, brr, ">", bsel, true) {
+        let n = brands.len() as i32;
+        app.setup.brand = (app.setup.brand as i32 + 1).rem_euclid(n) as usize;
+        app.selected_truck = 0;
+        app.setup.paint = 0;
+        app.audio.ui_move(get_time());
+    }
+
     // ---- class / laps / opponents --------------------------------------
     let cur_paint = catalog.get(app.selected_truck).and_then(|t| {
         (!t.paints.is_empty()).then(|| {
@@ -918,14 +987,14 @@ pub fn quick_race(app: &mut App) {
         None => "Paint  factory livery".to_string(),
     };
     let opts: [(u8, String); 4] = [
-        (1, format!("Class  {}", app.setup.class)),
-        (2, format!("Laps  {}", app.setup.laps)),
-        (3, format!("Rivals  {}", app.setup.opponents)),
-        (4, paint_label),
+        (2, format!("Class  {}", app.setup.class)),
+        (3, format!("Laps  {}", app.setup.laps)),
+        (4, format!("Rivals  {}", app.setup.opponents)),
+        (5, paint_label),
     ];
     // Swatch of the selected factory paint (`colorList[]` fields 3-5).
     if let Some((_, _, p)) = &cur_paint {
-        let r = opt_hit[4];
+        let r = opt_hit[5];
         let sw_x = r.x + pw * 0.62;
         draw_rectangle(
             sw_x,
