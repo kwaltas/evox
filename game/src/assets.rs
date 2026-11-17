@@ -436,6 +436,8 @@ impl Assets {
             "FLAG2",
             "FLAG3",
             "NEEDLE",
+            "MPH128",
+            "RPM128",
             "ODOM",
             "TICK",
             "PROFILE_FILE_ICON_1",

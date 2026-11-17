@@ -1755,6 +1755,9 @@ pub fn race(app: &mut App) {
     // HUD laid out like the original (ported from offroad4x4 `hud::draw`).
     let ui = &app.ui;
     let odom = app.assets.tex_now("ODOM");
+    let mph_face = app.assets.tex_now("MPH128");
+    let rpm_face = app.assets.tex_now("RPM128");
+    let needle = app.assets.tex_now("NEEDLE#KEY");
     let (sw, sh) = (vw(), vh());
     let racing = race.phase != crate::race::Phase::Finished;
     // top-left: timing
@@ -1817,27 +1820,34 @@ pub fn race(app: &mut App) {
         14.0,
         180.0,
     );
-    // bottom: speedometer (mph, odometer) left, tachometer and gear right
-    crate::classic::speedo(
-        ui,
-        odom,
-        128.0,
-        sh - 118.0,
-        96.0,
-        race.player.vel.length(),
-        race.odo_m,
-        app.profile.settings.metric,
-    );
+    // bottom-left: one instrument cluster like the retail HUD. The tach sits
+    // to the right and overlaps the speedo; it is drawn first so the speedo
+    // face (and its odometer) stays legible on top. The 4WD label hangs below.
+    let cluster_y = sh - 146.0;
     crate::classic::tach(
         ui,
         odom,
-        sw - 128.0,
-        sh - 118.0,
+        rpm_face,
+        needle,
+        288.0,
+        cluster_y,
         96.0,
         race.player.rpm,
         race.player.truck.engine.redline.max(1000.0),
         race.player.gear,
         race.drive_mode,
+    );
+    crate::classic::speedo(
+        ui,
+        odom,
+        mph_face,
+        needle,
+        118.0,
+        cluster_y,
+        96.0,
+        race.player.vel.length(),
+        race.odo_m,
+        app.profile.settings.metric,
     );
     if race.phase == crate::race::Phase::Countdown {
         app.ui.centered(

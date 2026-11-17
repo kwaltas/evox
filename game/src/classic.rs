@@ -470,8 +470,13 @@ pub fn menu_list(ui: &Ui, items: &[&str], sel: usize, desc: &str, profile: &str)
 // ------------------------------------------------------------------- HUD --
 
 /// A piece of the original's instrument sheet (`ODOM`).
+/// Source rects are authored against the retail 256x256 `ODOM` sheet; the HD
+/// override is a 4x upscale of the same layout, so scale the sub-rect with the
+/// loaded texture instead of assuming retail pixels.
 fn sheet(odom: Option<&Texture2D>, src: Rect, x: f32, y: f32, k: f32, c: Color) {
     if let Some(t) = odom {
+        let sx = t.width() / 256.0;
+        let sy = t.height() / 256.0;
         draw_texture_ex(
             t,
             x,
@@ -479,11 +484,71 @@ fn sheet(odom: Option<&Texture2D>, src: Rect, x: f32, y: f32, k: f32, c: Color) 
             c,
             DrawTextureParams {
                 dest_size: Some(vec2(src.w * k, src.h * k)),
-                source: Some(src),
+                source: Some(Rect::new(src.x * sx, src.y * sy, src.w * sx, src.h * sy)),
                 ..Default::default()
             },
         );
     }
+}
+
+/// Angle (degrees, standard math convention) of a needle for `value` on a
+/// 270-degree dial that sweeps from lower-left (0) to lower-right (max).
+fn dial_angle(value: f32, max: f32) -> f32 {
+    if max <= 0.0 {
+        return 225.0;
+    }
+    225.0 - 270.0 * (value / max).clamp(0.0, 1.0)
+}
+
+/// Retail gauge face (`MPH128` / `RPM128`) with the colour-keyed `NEEDLE`
+/// sprite rotated over it. Returns false when the face texture is missing so
+/// callers can fall back to the vector dial.
+fn dial_art(
+    face: Option<&Texture2D>,
+    needle: Option<&Texture2D>,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    value: f32,
+    max: f32,
+) -> bool {
+    let Some(face) = face else {
+        return false;
+    };
+    draw_texture_ex(
+        face,
+        cx - r,
+        cy - r,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(r * 2.0, r * 2.0)),
+            ..Default::default()
+        },
+    );
+    if let Some(needle) = needle {
+        // The blade grows upwards from a hub at 54/64 of the sprite height.
+        // Drawing the 64x64 sprite at `r` px keeps the blade just inside the
+        // 128px face scaled to 2r.
+        // Crop to the blade's column: the sprite's full-width horizontal
+        // balance bar otherwise reads as a second needle across the face.
+        let src = Rect::new(22.0, 0.0, 20.0, 64.0);
+        let sw = r * src.w / 64.0;
+        draw_texture_ex(
+            needle,
+            cx - sw * 0.5,
+            cy - r * (54.0 / 64.0),
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(sw, r)),
+                source: Some(src),
+                rotation: (90.0 - dial_angle(value, max)).to_radians(),
+                pivot: Some(vec2(cx, cy)),
+                ..Default::default()
+            },
+        );
+        draw_circle(cx, cy, r * 0.05, Color::new(0.35, 0.14, 0.0, 0.9));
+    }
+    true
 }
 
 /// A round instrument drawn the way the original does: white ticks and
@@ -501,7 +566,7 @@ fn dial(
     value: f32,
     scale_label: f32,
 ) {
-    let ang = |v: f32| (225.0 - 270.0 * (v / max)).to_radians();
+    let ang = |v: f32| dial_angle(v, max).to_radians();
     let shadow = Color::new(0.0, 0.0, 0.0, 0.55);
     let n = (max / step).round() as i32;
     for i in 0..=n {
@@ -553,9 +618,12 @@ fn dial(
 
 /// Speedometer with its label and the odometer drums from the sheet: mph
 /// and miles like the original, or km/h and km with metric units.
+#[allow(clippy::too_many_arguments)]
 pub fn speedo(
     ui: &Ui,
     odom: Option<&Texture2D>,
+    face: Option<&Texture2D>,
+    needle: Option<&Texture2D>,
     cx: f32,
     cy: f32,
     r: f32,
@@ -563,76 +631,75 @@ pub fn speedo(
     odo_m: f32,
     metric: bool,
 ) {
-    // km/h spans 0-240 labelled every 40 so the numbers do not crowd the arc
-    let (k, max, every, unit_m, label_y) = if metric {
+    // The retail face is a fixed 0-140 MPH scale, so the instrument cluster is
+    // imperial whenever it is available. The metric vector dial remains the
+    // fallback when the extracted face art is missing.
+    let (k, max, every, unit_m, label_y) = if metric && face.is_none() {
         (3.6, 240.0, 40.0, 1000.0, 40.0)
     } else {
         (2.236_936, 140.0, 20.0, 1609.344, 21.0)
     };
-    dial(
-        ui,
-        cx,
-        cy,
-        r,
-        max,
-        10.0,
-        every,
-        999.0,
-        speed_ms.abs() * k,
-        1.0,
-    );
-    sheet(
-        odom,
-        Rect::new(183.0, label_y, 30.0, 11.0),
-        cx - 15.0,
-        cy + 26.0,
-        1.0,
-        WHITE,
-    );
+    let speed = speed_ms.abs() * k;
+    let tex_dial = dial_art(face, needle, cx, cy, r, speed, max);
+    if !tex_dial {
+        dial(ui, cx, cy, r, max, 10.0, every, 999.0, speed, 1.0);
+        sheet(
+            odom,
+            Rect::new(183.0, label_y, 30.0, 11.0),
+            cx - 15.0,
+            cy + 26.0,
+            1.0,
+            WHITE,
+        );
+    }
     let tenths = ((odo_m / unit_m) * 10.0).floor() as u64;
     let digits = [100000u64, 10000, 1000, 100, 10, 1].map(|p| (tenths / 10 / p) % 10);
     let rows = [1.0, 17.0, 31.0, 46.0, 62.0, 77.0, 91.0, 107.0, 121.0, 136.0];
-    let (ox, oy) = (cx - 40.0, cy + 62.0);
+    let zoom = 1.5;
+    let (ox, oy) = (cx - 40.0 * zoom, cy + 56.0);
     draw_rectangle(
         ox - 3.0,
         oy - 2.0,
-        86.0,
-        17.0,
+        86.0 * zoom,
+        17.0 * zoom,
         Color::new(0.0, 0.0, 0.0, 0.6),
     );
-    for (k, d) in digits.iter().enumerate() {
+    for (i, d) in digits.iter().enumerate() {
         sheet(
             odom,
-            Rect::new(10.0 * k as f32, rows[*d as usize], 10.0, 13.0),
-            ox + 10.0 * k as f32,
+            Rect::new(10.0 * i as f32, rows[*d as usize], 10.0, 13.0),
+            ox + 10.0 * zoom * i as f32,
             oy,
-            1.0,
+            zoom,
             WHITE,
         );
     }
     sheet(
         odom,
         Rect::new(62.0, rows[0], 5.0, 13.0),
-        ox + 62.0,
+        ox + 62.0 * zoom,
         oy,
-        1.0,
+        zoom,
         WHITE,
     );
     sheet(
         odom,
         Rect::new(70.0, rows[(tenths % 10) as usize], 10.0, 13.0),
-        ox + 70.0,
+        ox + 70.0 * zoom,
         oy,
-        1.0,
+        zoom,
         WHITE,
     );
 }
 
 /// Tachometer with "x1000 / min", the gear ring (P R N 1-5 on the sheet,
 /// indexed like evox's gearbox) and the drive-mode label.
+#[allow(clippy::too_many_arguments)]
 pub fn tach(
     ui: &Ui,
     odom: Option<&Texture2D>,
+    face: Option<&Texture2D>,
+    needle: Option<&Texture2D>,
     cx: f32,
     cy: f32,
     r: f32,
@@ -642,33 +709,37 @@ pub fn tach(
     drive_mode: u8,
 ) {
     let max = ((redline / 1000.0).ceil() + 1.0) * 1000.0;
-    dial(
-        ui,
-        cx,
-        cy,
-        r,
-        max,
-        500.0,
-        1000.0,
-        redline,
-        rpm.max(700.0),
-        1000.0,
-    );
-    sheet(
-        odom,
-        Rect::new(183.0, 1.0, 70.0, 13.0),
-        cx - 35.0,
-        cy + 26.0,
-        1.0,
-        WHITE,
-    );
+    // The retail RPM face is labelled 0-8 x1000.
+    let tex_dial = face.is_some() && dial_art(face, needle, cx, cy, r, rpm, 8000.0);
+    if !tex_dial {
+        dial(
+            ui,
+            cx,
+            cy,
+            r,
+            max,
+            500.0,
+            1000.0,
+            redline,
+            rpm.max(700.0),
+            1000.0,
+        );
+        sheet(
+            odom,
+            Rect::new(183.0, 1.0, 70.0, 13.0),
+            cx - 35.0,
+            cy + 26.0,
+            1.0,
+            WHITE,
+        );
+    }
     let row = gear.min(7) as f32;
     sheet(
         odom,
         Rect::new(128.0, 2.0 + 28.0 * row, 24.0, 24.0),
-        cx - 15.0,
-        cy + 44.0,
-        1.25,
+        cx - 18.0,
+        cy + 40.0,
+        1.5,
         WHITE,
     );
     let mode = match drive_mode {
@@ -679,9 +750,9 @@ pub fn tach(
     sheet(
         odom,
         Rect::new(183.0, mode, 46.0, 11.0),
-        cx - r - 6.0,
-        cy + r - 16.0,
-        1.0,
+        cx - 34.5,
+        cy + r + 6.0,
+        1.5,
         WHITE,
     );
 }
@@ -1029,6 +1100,14 @@ mod tests {
             l.join(" "),
             "Quick Race allows you to run a race on any track."
         );
+    }
+
+    #[test]
+    fn gauge_needle_sweeps_270_degrees() {
+        assert!((dial_angle(0.0, 140.0) - 225.0).abs() < 1e-4);
+        assert!((dial_angle(70.0, 140.0) - 90.0).abs() < 1e-4);
+        assert!((dial_angle(140.0, 140.0) + 45.0).abs() < 1e-4);
+        assert!((dial_angle(200.0, 140.0) + 45.0).abs() < 1e-4);
     }
 
     #[test]
