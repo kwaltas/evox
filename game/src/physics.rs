@@ -36,6 +36,8 @@
 //!   0 MPH / 2200 RPM incline stall was the old code forcing `rpm` down to
 //!   idle whenever wheel speed was zero.
 
+use std::ops::{Deref, DerefMut};
+
 use macroquad::prelude::{vec3, Quat, Vec3};
 
 use crate::collide::Collider;
@@ -43,23 +45,19 @@ use crate::parts::StatMods;
 use crate::terrain::{Surface, Track};
 use crate::vehicle::{Truck, FT, LB};
 
+mod rigid_body;
+mod suspension;
+mod tire;
+
+pub use rigid_body::RigidBody;
+use suspension::SpringDamper;
+
 pub const TICK_HZ: f32 = 60.0;
 pub const DT: f32 = 1.0 / TICK_HZ;
 /// Integration substeps per `DT` tick (4 → 240 Hz, as offroad4x4).
 pub const SUBSTEPS: usize = 4;
 pub const GRAVITY: f32 = 9.81;
 const AIR_DENSITY: f32 = 1.2;
-
-/// Pacejka `B·x − E·(B·x − atan(B·x))` shape. Values from the prototype that
-/// finished every retail track: peak near 7°, a third of the grip gone by 20°.
-const TIRE_B: f32 = 8.6;
-const TIRE_C: f32 = 1.62;
-const TIRE_E: f32 = 0.92;
-/// Longitudinal share of the same curve (the prototype's `TYRE_LONG_SHARE`).
-const TIRE_LONG_SHARE: f32 = 0.92;
-/// Below this speed the slip angle is computed against it, so parking does not
-/// spike the lateral force.
-const TYRE_SLIP_FLOOR: f32 = 0.8;
 
 /// Drivetrain losses (gearbox, transfer case, bearings).
 const DRIVETRAIN_EFF: f32 = 0.88;
@@ -69,15 +67,6 @@ const LAUNCH_RPM: f32 = 2150.0;
 const SHIFT_TIME: f32 = 0.16;
 /// Low-range crawler assist starts above this steepness (1 − n.y, ≈ 28°).
 const CRAWL_STEEPNESS: f32 = 0.12;
-/// `damping_cf = DAMPING_SQRT_FACTOR · √spring_rate` (retail `4x42.exe`).
-const DAMPING_SQRT_FACTOR: f32 = 3.5;
-/// lb·s/ft → N·s/m.
-const LBF_S_PER_FT: f32 = 14.593_903;
-/// Bump stops start at this share of the travel.
-const BUMP_STOP_ZONE: f32 = 0.92;
-/// Body-corner spring/damper, per kilogram of truck. Soft enough that the
-/// wheels keep carrying the load in a V ditch, stiff enough to stop the hull
-/// sinking into a 35° face.
 /// Hull/terrain friction coefficient (offroad4x4 `tuning.rs`).
 const BODY_CONTACT_FRICTION: f32 = 0.6;
 /// Wheel ray march: coarse steps over the reach, then bisection passes.
@@ -172,10 +161,10 @@ pub struct Vehicle {
     pub truck: Truck,
     pub config: Config,
     pub mods: StatMods,
-    pub pos: Vec3,
-    pub vel: Vec3,
-    pub rot: Quat,
-    pub angular: Vec3,
+    /// Chassis rigid-body state: position, orientation, linear and angular
+    /// velocity. Field access is forwarded through `Deref`/`DerefMut` so the
+    /// rest of the game keeps using `vehicle.pos`, `vehicle.vel`, etc.
+    pub body: RigidBody,
     pub wheels: [Wheel; 4],
     pub rpm: f32,
     /// Index into `truck.gear_ratios`: 0 park, 1 reverse, 2 neutral, 3 = 1st.
@@ -202,14 +191,22 @@ pub struct Vehicle {
     pub drive_force: f32,
 }
 
-fn wheel_index(axle: usize, side: usize) -> usize {
-    axle * 2 + side
+impl Deref for Vehicle {
+    type Target = RigidBody;
+
+    fn deref(&self) -> &RigidBody {
+        &self.body
+    }
 }
 
-/// Pacejka magic formula, normalised to −1..1.
-fn magic(x: f32) -> f32 {
-    let b = TIRE_B * x;
-    (TIRE_C * b - TIRE_E * (b - b.atan())).atan().sin()
+impl DerefMut for Vehicle {
+    fn deref_mut(&mut self) -> &mut RigidBody {
+        &mut self.body
+    }
+}
+
+fn wheel_index(axle: usize, side: usize) -> usize {
+    axle * 2 + side
 }
 
 impl Vehicle {
@@ -235,10 +232,7 @@ impl Vehicle {
                 cg_height_m: (truck.height * FT * 0.30).clamp(0.28, 0.50),
                 ..Default::default()
             },
-            pos: Vec3::new(0.0, 1.2, 0.0),
-            rot: Quat::IDENTITY,
-            vel: Vec3::ZERO,
-            angular: Vec3::ZERO,
+            body: RigidBody::new(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY),
             wheels,
             rpm: IDLE_RPM,
             gear: 3,
@@ -384,13 +378,16 @@ impl Vehicle {
         axle_rate * ratio
     }
 
-    /// Damper rate of one corner, N·s/m. The retail set-up computes
-    /// `damping_cf = 3.5 · √spring_rate` in lb·s/ft for each axle
-    /// (`decomp_4x42_full.c` 199 044-199 051 and 200 586-200 592; the 3.5 is
-    /// `DAT_0065d482` / `DAT_0065d8a2`, read as 3.5f from `4x42.exe`).
-    fn damping(&self, axle: usize, _i: usize) -> f32 {
+    /// Spring/damper for one corner, in SI. The damper keeps the retail
+    /// `3.5·√spring_rate` formula; the spring rate also carries the corner's
+    /// motion ratio.
+    fn suspension(&self, axle: usize, i: usize) -> SpringDamper {
         let rate_lb_ft = self.truck.axles[axle].spring_rate.max(1.0);
-        DAMPING_SQRT_FACTOR * rate_lb_ft.sqrt() * LBF_S_PER_FT
+        SpringDamper::new(
+            self.spring_rate(axle, i),
+            SpringDamper::retail_damper(rate_lb_ft),
+            self.travel(axle),
+        )
     }
 
     /// Signed overall ratio engine → wheel for the selected gear.
@@ -525,24 +522,6 @@ impl Vehicle {
         out
     }
 
-    /// `I⁻¹·v` for a world-space vector, with the inertia tensor diagonal in
-    /// the chassis frame.
-    fn inv_inertia_world(&self, v: Vec3, inertia: Vec3) -> Vec3 {
-        let local = self.rot.inverse() * v;
-        self.rot
-            * vec3(
-                local.x / inertia.x,
-                local.y / inertia.y,
-                local.z / inertia.z,
-            )
-    }
-
-    /// Apply impulse `j` (N·s) at offset `r` from the centre of mass.
-    fn apply_impulse(&mut self, j: Vec3, r: Vec3, inv_mass: f32, inertia: Vec3) {
-        self.vel += j * inv_mass;
-        self.angular += self.inv_inertia_world(r.cross(j), inertia);
-    }
-
     /// Terrain normal from central differences of the height field.
     fn ground_normal(&self, x: f32, z: f32, sample: &dyn Fn(f32, f32) -> (f32, Surface)) -> Vec3 {
         let e = 0.75;
@@ -571,7 +550,6 @@ impl Vehicle {
 
     fn substep(&mut self, input: &Input, sample: &dyn Fn(f32, f32) -> (f32, Surface), dt: f32) {
         let mass = self.mass();
-        let inv_mass = 1.0 / mass;
         let inertia = self.inertia();
         let forward = self.forward();
         let up = self.rot * Vec3::Y;
@@ -675,32 +653,7 @@ impl Vehicle {
                     let spring_len = (dist - wheel_radius).max(0.0);
                     let comp = (travel - spring_len).max(0.0);
                     let comp_vel = ((comp - w.compression) / dt).clamp(-8.0, 8.0);
-                    let k = self.spring_rate(axle, i);
-                    let damp = self.damping(axle, i);
-                    // Asymmetric damper curve calibrated for trophy-truck landing
-                    // control: plush bump absorption (0.90x) on compression and
-                    // high rebound damping (2.25x) so landings settle without
-                    // pogo-bouncing, plus hydraulic cushion & hysteretic bump stop.
-                    let eff_damp = if comp_vel < 0.0 {
-                        damp * 2.25
-                    } else {
-                        damp * 0.90
-                    };
-                    let mut fs = k * comp + eff_damp * comp_vel;
-                    let cushion_zone = travel * 0.72;
-                    if comp > cushion_zone && comp_vel > 0.0 {
-                        let pen = (comp - cushion_zone) / (travel * 0.28).max(0.02);
-                        fs += damp * 1.8 * comp_vel * pen.clamp(0.0, 2.0);
-                    }
-                    let stop_zone = travel * BUMP_STOP_ZONE;
-                    if comp > stop_zone {
-                        if comp_vel > 0.0 {
-                            fs += k * 8.0 * (comp - stop_zone) + damp * 2.5 * comp_vel;
-                        } else {
-                            fs += k * 2.5 * (comp - stop_zone);
-                        }
-                    }
-                    let fs = fs.max(0.0);
+                    let fs = self.suspension(axle, i).force(comp, comp_vel);
                     let ray_p = anchor - up * dist;
                     let (ground_y, surface) = sample(ray_p.x, ray_p.z);
                     let cp = vec3(ray_p.x, ground_y + 0.03, ray_p.z);
@@ -711,10 +664,12 @@ impl Vehicle {
                         force -= v_horiz * (140.0 + 38.0 * v_horiz.length());
                     }
                     let corner_cf = self.truck.axles[axle].tires[i % 2].cf.max(0.2);
-                    let mu = self.config.tire_mu
-                        * (1.0 + self.mods.tire_cf)
-                        * surface.grip()
-                        * corner_cf;
+                    let mu = tire::surface_mu(
+                        self.config.tire_mu,
+                        self.mods.tire_cf,
+                        surface,
+                        corner_cf,
+                    );
 
                     wheel.grounded = true;
                     wheel.compression = comp;
@@ -741,10 +696,10 @@ impl Vehicle {
                     let v_long = pv.dot(gf);
                     let v_lat = pv.dot(gs);
 
-                    let alpha = v_lat.atan2(v_long.abs().max(TYRE_SLIP_FLOOR));
+                    let alpha = tire::slip_angle(v_long, v_lat);
                     wheel.slip_angle = alpha;
                     let rear_bias = if axle == 1 { 1.05 } else { 1.0 };
-                    let mut f_lat = -magic(alpha) * mu * fs * 1.15 * rear_bias;
+                    let mut f_lat = -tire::magic(alpha) * mu * fs * 1.15 * rear_bias;
                     if v_long.abs() < 2.5 {
                         // Linear bite at crawl speed so the truck holds lines on banks/grades.
                         let lin = -v_lat * 7.5 * mass * 0.25;
@@ -790,8 +745,8 @@ impl Vehicle {
                         } else {
                             1.0
                         };
-                    let want = (f_long / limit.max(1.0)).clamp(-3.0, 3.0);
-                    let f_long_raw = magic(want) * limit * TIRE_LONG_SHARE;
+                    let want = tire::longitudinal_demand(f_long, limit);
+                    let f_long_raw = tire::longitudinal_force(want, limit);
                     wheel.slip_ratio = (want.abs() - 1.0).clamp(0.0, 1.5);
 
                     let mut lat_grip = 1.0;
@@ -799,11 +754,13 @@ impl Vehicle {
                         lat_grip = 0.4;
                     }
                     let mag = (f_long_raw * f_long_raw + f_lat * f_lat).sqrt();
-                    let (f_long, f_lat) = if mag > limit && mag > 0.0 {
+                    let (clamped_long, clamped_lat, clipped) =
+                        tire::clamp_ellipse(f_long_raw, f_lat, limit);
+                    let (f_long, f_lat) = if clipped {
                         wheel.slip_ratio = wheel
                             .slip_ratio
                             .max(((mag - limit) / limit.max(1.0)).min(1.5));
-                        (f_long_raw * limit / mag, f_lat * limit / mag)
+                        (clamped_long, clamped_lat)
                     } else {
                         (f_long_raw, f_lat * lat_grip)
                     };
@@ -881,32 +838,25 @@ impl Vehicle {
         }
 
         // ---- integrate ------------------------------------------------------
-        self.vel += force * inv_mass * dt;
+        self.body.integrate_force(force, mass, dt);
         if braking > 0.5 && input.throttle <= 0.01 && grounded >= 3 && self.vel.length() < 0.8 {
             // Brakes pin a nearly stopped truck only when throttle is not held.
             self.vel = Vec3::ZERO;
         }
-        // Inertia is diagonal in the chassis frame: rotate the world torque
-        // in, divide, rotate back (offroad4x4 `Car::apply_world_torque`).
-        self.angular += self.inv_inertia_world(torque, inertia) * dt;
         let damp = if grounded > 0 {
             ANGULAR_DAMPING
         } else {
             AIR_ANGULAR_DAMPING
         };
-        self.angular *= (1.0 - damp * dt).clamp(0.0, 1.0);
+        // Inertia is diagonal in the chassis frame: rotate the world torque
+        // in, divide, rotate back (offroad4x4 `Car::apply_world_torque`).
+        self.body.integrate_torque(torque, inertia, damp, dt);
         if grounded > 0 && v_fwd.abs() > 3.0 && input.steer.abs() < 0.20 {
             let yaw_rate = self.angular.dot(up);
             let yaw_damp = (0.35 + (v_fwd.abs() / 20.0).min(0.65)) * dt;
             self.angular -= up * yaw_rate * yaw_damp.clamp(0.0, 0.50);
         }
-        self.pos += self.vel * dt;
-
-        let w = self.angular;
-        if w.length_squared() > 1e-8 {
-            let dq = Quat::from_axis_angle(w.normalize(), w.length() * dt);
-            self.rot = (dq * self.rot).normalize();
-        }
+        self.body.integrate_pose(dt);
 
         // ---- hull contact: velocity-level impulses, restitution 0 ----------
         // Body corners below the height field get a normal impulse that
@@ -951,24 +901,23 @@ impl Vehicle {
                     deepest = (depth, n);
                 }
                 let r = p - self.pos;
-                let vp = self.vel + self.angular.cross(r);
+                let vp = self.body.point_velocity(r);
                 let vn = vp.dot(n);
                 if vn >= 0.0 {
                     continue;
                 }
-                let k_n = inv_mass + n.dot(self.inv_inertia_world(r.cross(n), inertia).cross(r));
+                let k_n = self.body.inverse_effective_mass(r, n, mass, inertia);
                 let jn = -vn / k_n.max(1e-6);
-                self.apply_impulse(n * jn, r, inv_mass, inertia);
+                self.body.apply_impulse(n * jn, r, mass, inertia);
                 // friction against the remaining tangential slip
-                let vp = self.vel + self.angular.cross(r);
+                let vp = self.body.point_velocity(r);
                 let vt = vp - n * vp.dot(n);
                 let slip = vt.length();
                 if slip > 1e-4 {
                     let t = vt / slip;
-                    let k_t =
-                        inv_mass + t.dot(self.inv_inertia_world(r.cross(t), inertia).cross(r));
+                    let k_t = self.body.inverse_effective_mass(r, t, mass, inertia);
                     let jt = (slip / k_t.max(1e-6)).min(BODY_CONTACT_FRICTION * jn);
-                    self.apply_impulse(-t * jt, r, inv_mass, inertia);
+                    self.body.apply_impulse(-t * jt, r, mass, inertia);
                 }
             }
         }

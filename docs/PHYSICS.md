@@ -7,6 +7,21 @@ converted once at load; the simulation is SI in fixed 60 Hz ticks of four
 240 Hz substeps (offroad4x4 `PHYSICS_DT = 1/240`), driven from a frame-time
 accumulator in `Race::tick`, so the display rate never changes sim speed.
 
+## Module layout
+
+`game/src/physics.rs` is the fixed-step facade and powertrain/chassis solver.
+The three reusable dynamics pieces live beside it:
+
+| Module | Responsibility |
+|---|---|
+| `physics/rigid_body.rs` | `RigidBody` state (mass-frame position, orientation, linear/angular velocity), chassis-frame `I⁻¹`, impulses, and pose/torque integration |
+| `physics/suspension.rs` | Raycast spring/damper: `F = k·x + c·ẋ`, retail `c = 3.5·√spring_rate`, hydraulic cushion and progressive bump stops |
+| `physics/tire.rs` | Shared Pacejka curve, slip angle, longitudinal demand/force, `.CLR` surface friction and the friction-ellipse clamp |
+
+`Vehicle` owns a `RigidBody` and forwards field access through
+`Deref`/`DerefMut`, so gameplay code keeps using `vehicle.pos`, `vehicle.vel`,
+`vehicle.rot` and `vehicle.angular`.
+
 ## Suspension
 
 | Field | Unit | Meaning |
