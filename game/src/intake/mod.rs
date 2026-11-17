@@ -7,6 +7,7 @@ pub mod iso;
 pub mod loader;
 pub mod pod;
 pub mod tiff;
+pub mod ui2;
 pub mod verify;
 
 use std::path::{Path, PathBuf};

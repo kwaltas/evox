@@ -44,9 +44,10 @@ bundle or ship any game data.
 
 On first launch Evox checks for a complete extracted tree. If none is found it
 opens a native file dialog asking for your retail **ISO** (or the mounted disc /
-folder containing the `.POD` files), extracts the archives itself, shows a
-progress screen, and boots straight into the original UI. The tree lives in a
-per-user writable directory:
+folder containing the `.POD` files), extracts the archives itself, converts the
+retail interface art into the menu PNGs (`assets/ui2/`), shows a progress
+screen, and boots straight into the original UI. No manual art steps are
+required. The tree lives in a per-user writable directory:
 
 - macOS `~/Library/Application Support/Evox`
 - Windows `%LOCALAPPDATA%\Evox`

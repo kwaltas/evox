@@ -5,6 +5,10 @@
 EvoX ships **code and derived metadata only**. No mesh, texture, sound, video,
 or level data is redistributed. The user's own disc supplies those.
 
+The native intake also converts interface art from the user's disc into the
+local `assets/ui2/` tree; those PNGs are derived game data, are written only to
+the per-user data directory, and are never committed to git.
+
 What is derived and therefore kept in git:
 
 - `assets/pods_evo2.md5` — 52 MD5 digests of the retail 4x4 Evolution 2 archives

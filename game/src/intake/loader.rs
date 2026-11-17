@@ -94,6 +94,15 @@ fn status(p: &Progress) -> (String, f32, String) {
             },
             "Baking palette TIFFs to RAW/ACT/OPA".into(),
         ),
+        Progress::UiArt { done, total } => (
+            format!("Menu art {done}/{total}"),
+            if *total == 0 {
+                0.99
+            } else {
+                0.99 + 0.009 * (*done as f32 / *total as f32)
+            },
+            "Converting interface TIFFs to PNG".into(),
+        ),
         Progress::Done { files, bytes } => (
             format!(
                 "Done: {files} files, {:.1} MiB",

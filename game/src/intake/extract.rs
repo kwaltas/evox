@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use super::iso::{self, IsoPod};
 use super::pod::{classify, sanitize, Pod};
 use super::tiff;
+use super::ui2;
 use super::Source;
 
 const REQUIRED: [&str; 4] = ["startup.pod", "truck.pod", "ui.pod", "sound.pod"];
@@ -32,6 +33,10 @@ pub enum Progress {
         bytes: u64,
     },
     Art {
+        done: usize,
+        total: usize,
+    },
+    UiArt {
         done: usize,
         total: usize,
     },
@@ -129,6 +134,7 @@ pub struct Report {
     pub files: usize,
     pub bytes: u64,
     pub art: tiff::ArtStats,
+    pub ui2: ui2::Stats,
 }
 
 fn collect_pods(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -321,6 +327,16 @@ pub fn run(plan: Plan, root: &Path, mut progress: impl FnMut(Progress)) -> Resul
         );
     }
 
+    let ui2 = match ui2::convert(&staging, &assets, |done, total| {
+        progress(Progress::UiArt { done, total });
+    }) {
+        Ok(stats) => stats,
+        Err(e) => {
+            eprintln!("intake: native ui2 conversion failed: {e}");
+            ui2::Stats::default()
+        }
+    };
+
     let backup = assets.join(format!(".extracted.old-{}", std::process::id()));
     if target.exists() {
         std::fs::rename(&target, &backup).map_err(|e| {
@@ -352,6 +368,8 @@ pub fn run(plan: Plan, root: &Path, mut progress: impl FnMut(Progress)) -> Resul
         "art_converted": art.converted,
         "art_skipped": art.skipped,
         "art_failed": art.failed,
+        "ui2_converted": ui2.converted,
+        "ui2_failed": ui2.failed,
     });
     let install_path = assets.join("install.json");
     std::fs::write(
@@ -371,6 +389,7 @@ pub fn run(plan: Plan, root: &Path, mut progress: impl FnMut(Progress)) -> Resul
         files,
         bytes,
         art,
+        ui2,
     })
 }
 
