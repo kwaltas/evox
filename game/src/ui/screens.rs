@@ -1882,11 +1882,22 @@ pub fn race(app: &mut App) {
     // cover the gauges' lower arc.
     if race.paused {
         app.ui.hint(
-            "W/S Throttle/Brake   A/D Steer   Space Handbrake   E/Q Shift   P Pause   F2 Finish",
+            "W/S Throttle/Brake   A/D Steer   Space Handbrake   E/Q Shift   U Units   P Pause   F2 Finish",
         );
     }
     if is_key_pressed(KeyCode::P) {
         race.paused = !race.paused;
+    }
+    // Speed-unit hot swap; the pause menu toggles the same setting.
+    if is_key_pressed(KeyCode::U) {
+        app.profile.settings.metric = !app.profile.settings.metric;
+        let unit = if app.profile.settings.metric {
+            "km/h"
+        } else {
+            "mph"
+        };
+        app.toast(format!("Speed units: {unit}"));
+        app.save_profile();
     }
     // QA shortcut: force the flag so career chaining can be exercised without
     // a full lap.

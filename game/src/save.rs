@@ -54,7 +54,7 @@ impl Default for Profile {
                 master_volume: 0.8,
                 music_volume: 0.45,
                 invert_y: false,
-                metric: true,
+                metric: false,
                 camera_fov: 70.0,
                 vsync: true,
                 resolution_scale: 1.0,

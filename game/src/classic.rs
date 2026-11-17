@@ -491,6 +491,20 @@ fn sheet(odom: Option<&Texture2D>, src: Rect, x: f32, y: f32, k: f32, c: Color) 
     }
 }
 
+/// Counter digit with a soft recessed shadow, so the ODOM glyphs read as a
+/// physical drum rather than flat white text on the face.
+fn sheet_ink(odom: Option<&Texture2D>, src: Rect, x: f32, y: f32, k: f32, c: Color) {
+    sheet(
+        odom,
+        src,
+        x + 1.0,
+        y + 1.0,
+        k,
+        Color::new(0.0, 0.0, 0.0, 0.5),
+    );
+    sheet(odom, src, x, y, k, c);
+}
+
 /// Angle (degrees, standard math convention) of a needle for `value` on a
 /// 270-degree dial that sweeps from lower-left (0) to lower-right (max).
 fn dial_angle(value: f32, max: f32) -> f32 {
@@ -526,29 +540,33 @@ fn dial_art(
         },
     );
     if let Some(needle) = needle {
-        // The blade grows upwards from a hub at 54/64 of the sprite height.
-        // Drawing the 64x64 sprite at `r` px keeps the blade just inside the
-        // 128px face scaled to 2r.
-        // Crop to the blade's column: the sprite's full-width horizontal
-        // balance bar otherwise reads as a second needle across the face.
-        let src = Rect::new(22.0, 0.0, 20.0, 64.0);
-        let sw = r * src.w / 64.0;
-        draw_texture_ex(
-            needle,
-            cx - sw * 0.5,
-            cy - r * (54.0 / 64.0),
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(sw, r)),
-                source: Some(src),
-                rotation: (90.0 - dial_angle(value, max)).to_radians(),
-                pivot: Some(vec2(cx, cy)),
-                ..Default::default()
-            },
-        );
-        draw_circle(cx, cy, r * 0.05, Color::new(0.35, 0.14, 0.0, 0.9));
+        draw_needle(needle, cx, cy, r, value, max);
     }
     true
+}
+
+/// The retail needle sprite, cropped to its blade column and rotated about
+/// the dial hub. The 64px art is drawn at `r` px with linear filtering, so the
+/// keyed alpha ramp keeps the edge soft instead of stair-stepped.
+fn draw_needle(needle: &Texture2D, cx: f32, cy: f32, r: f32, value: f32, max: f32) {
+    // Drop the full-width horizontal balance bar; it would read as a second
+    // needle lying across the face.
+    let src = Rect::new(22.0, 0.0, 20.0, 64.0);
+    let sw = r * src.w / 64.0;
+    draw_texture_ex(
+        needle,
+        cx - sw * 0.5,
+        cy - r * (54.0 / 64.0),
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(sw, r)),
+            source: Some(src),
+            rotation: (90.0 - dial_angle(value, max)).to_radians(),
+            pivot: Some(vec2(cx, cy)),
+            ..Default::default()
+        },
+    );
+    draw_circle(cx, cy, r * 0.05, Color::new(0.35, 0.14, 0.0, 0.9));
 }
 
 /// A round instrument drawn the way the original does: white ticks and
@@ -565,6 +583,7 @@ fn dial(
     red_from: f32,
     value: f32,
     scale_label: f32,
+    needle: Option<&Texture2D>,
 ) {
     let ang = |v: f32| dial_angle(v, max).to_radians();
     let shadow = Color::new(0.0, 0.0, 0.0, 0.55);
@@ -598,22 +617,29 @@ fn dial(
             text(ui, &t, tx, ty, 18.0, col);
         }
     }
-    // needle: the orange of the original's needle texture
-    let a = ang(value.clamp(0.0, max));
-    let d = vec2(a.cos(), -a.sin());
-    let nn = vec2(-d.y, d.x);
-    let c = vec2(cx, cy);
-    let orange = Color::new(0.96, 0.38, 0.01, 1.0);
-    let o = vec2(1.5, 1.5);
-    draw_triangle(
-        c + nn * 4.0 + o,
-        c - nn * 4.0 + o,
-        c + d * (r - 6.0) + o,
-        shadow,
-    );
-    draw_triangle(c + nn * 4.0, c - nn * 4.0, c + d * (r - 6.0), orange);
-    draw_triangle(c + nn * 4.0, c - nn * 4.0, c - d * 14.0, orange);
-    draw_circle(cx, cy, 6.0, Color::new(0.56, 0.22, 0.0, 1.0));
+    // Fallback dials get the same machined rim as the retail face so the
+    // km/h instrument still reads as a finished gauge.
+    draw_circle_lines(cx, cy, r - 1.0, 2.0, Color::new(0.78, 0.84, 0.88, 0.85));
+    if let Some(needle) = needle {
+        draw_needle(needle, cx, cy, r, value.clamp(0.0, max), max);
+    } else {
+        // Vector fallback when the retail sprite is missing.
+        let a = ang(value.clamp(0.0, max));
+        let d = vec2(a.cos(), -a.sin());
+        let nn = vec2(-d.y, d.x);
+        let c = vec2(cx, cy);
+        let orange = Color::new(0.96, 0.38, 0.01, 1.0);
+        let o = vec2(1.5, 1.5);
+        draw_triangle(
+            c + nn * 4.0 + o,
+            c - nn * 4.0 + o,
+            c + d * (r - 6.0) + o,
+            shadow,
+        );
+        draw_triangle(c + nn * 4.0, c - nn * 4.0, c + d * (r - 6.0), orange);
+        draw_triangle(c + nn * 4.0, c - nn * 4.0, c - d * 14.0, orange);
+        draw_circle(cx, cy, 6.0, Color::new(0.56, 0.22, 0.0, 1.0));
+    }
 }
 
 /// Speedometer with its label and the odometer drums from the sheet: mph
@@ -631,10 +657,9 @@ pub fn speedo(
     odo_m: f32,
     metric: bool,
 ) {
-    // The retail face is a fixed 0-140 MPH scale, so the instrument cluster is
-    // imperial whenever it is available. The metric vector dial remains the
-    // fallback when the extracted face art is missing.
-    let (k, max, every, unit_m, label_y) = if metric && face.is_none() {
+    // The retail face is a fixed 0-140 MPH scale; km/h uses the vector 0-240
+    // dial with the same needle sprite.
+    let (k, max, every, unit_m, label_y) = if metric {
         (3.6, 240.0, 40.0, 1000.0, 40.0)
     } else {
         (2.236_936, 140.0, 20.0, 1609.344, 21.0)
@@ -642,12 +667,12 @@ pub fn speedo(
     let speed = speed_ms.abs() * k;
     // The cluster overlaps the tach: an opaque disc under the (translucent)
     // retail face makes the speedometer physically occlude the dial behind it.
-    if face.is_some() {
-        draw_circle(cx, cy, r * 0.985, Color::new(0.012, 0.014, 0.012, 1.0));
-    }
-    let tex_dial = dial_art(face, needle, cx, cy, r, speed, max);
+    // km/h has no 0-240 retail face, so the vector dial gets the same backing
+    // to stay a solid instrument instead of ticks floating over the scene.
+    let tex_dial = !metric && dial_art(face, needle, cx, cy, r, speed, max);
     if !tex_dial {
-        dial(ui, cx, cy, r, max, 10.0, every, 999.0, speed, 1.0);
+        draw_circle(cx, cy, r * 0.985, Color::new(0.012, 0.014, 0.012, 1.0));
+        dial(ui, cx, cy, r, max, 10.0, every, 999.0, speed, 1.0, needle);
         sheet(
             odom,
             Rect::new(183.0, label_y, 30.0, 11.0),
@@ -662,11 +687,11 @@ pub fn speedo(
     let rows = [1.0, 17.0, 31.0, 46.0, 62.0, 77.0, 91.0, 107.0, 121.0, 136.0];
     // Odometer drums sit directly on the face, like the counter moulded into
     // the retail speedometer; no backing plate.
-    let zoom = 1.35;
-    let (ox, oy) = (cx - 40.0 * zoom, cy + 68.0);
-    let ink = Color::new(0.93, 0.95, 0.93, 0.95);
+    let zoom = 1.15;
+    let (ox, oy) = (cx - 40.0 * zoom, cy + 74.0);
+    let ink = Color::new(0.80, 0.84, 0.80, 0.9);
     for (i, d) in digits.iter().enumerate() {
-        sheet(
+        sheet_ink(
             odom,
             Rect::new(10.0 * i as f32, rows[*d as usize], 10.0, 13.0),
             ox + 10.0 * zoom * i as f32,
@@ -675,7 +700,7 @@ pub fn speedo(
             ink,
         );
     }
-    sheet(
+    sheet_ink(
         odom,
         Rect::new(62.0, rows[0], 5.0, 13.0),
         ox + 62.0 * zoom,
@@ -683,7 +708,7 @@ pub fn speedo(
         zoom,
         ink,
     );
-    sheet(
+    sheet_ink(
         odom,
         Rect::new(70.0, rows[(tenths % 10) as usize], 10.0, 13.0),
         ox + 70.0 * zoom,
@@ -723,6 +748,7 @@ pub fn tach(
             redline,
             rpm.max(700.0),
             1000.0,
+            needle,
         );
         sheet(
             odom,

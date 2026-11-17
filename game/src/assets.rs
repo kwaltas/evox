@@ -737,7 +737,12 @@ impl Assets {
                 })
                 .min()
                 .unwrap_or(255);
-            let a = ((dist - 6) * 14).clamp(0, 255) as u8;
+            // Soft ramp instead of a hard key: the needle is drawn at ~1.2x,
+            // so a binary alpha cut leaves stair-stepped edges. Reaching full
+            // opacity well past the background keeps the blade solid while
+            // blending the antialiased rim of the retail sprite.
+            let t = ((dist - 4) as f32 / 24.0).clamp(0.0, 1.0);
+            let a = (255.0 * t.powf(1.2)) as u8;
             rgba.extend_from_slice(&[r, g, b, a]);
         }
         let tex = Texture2D::from_rgba8(w as u16, h as u16, &rgba);
