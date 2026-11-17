@@ -48,6 +48,7 @@ mod career;
 mod classic;
 mod collide;
 mod editor;
+mod intake;
 mod leaderboard;
 mod master;
 mod net;
@@ -101,6 +102,22 @@ fn main() {
 
     let (w, h) = parse_resolution(&args);
     let debug = args.iter().any(|a| a == "--debug");
+
+    // A positional directory is a legacy asset root. Apply it before the
+    // intake check so a checkout can still point at an out-of-tree tree.
+    let assets_override = args
+        .iter()
+        .position(|a| a == "--assets")
+        .and_then(|i| args.get(i + 1))
+        .map(std::path::PathBuf::from);
+    if assets_override.is_none() {
+        if let Some(dir) = args.get(1).filter(|a| !a.starts_with('-')) {
+            let p = std::path::Path::new(dir);
+            if p.is_dir() {
+                let _ = std::env::set_current_dir(p);
+            }
+        }
+    }
     let conf = Conf {
         window_title: format!("EvoX {VERSION}"),
         window_width: w as i32,
@@ -137,9 +154,6 @@ async fn run(debug: bool) {
         .and_then(|v| v.parse().ok())
     {
         app.setup.paint = p;
-    }
-    if let Some(dir) = std::env::args().nth(1).filter(|a| !a.starts_with('-')) {
-        let _ = std::env::set_current_dir(&dir);
     }
     // QA hook: deterministic boot into a single race without menu navigation.
     let args: Vec<String> = std::env::args().collect();
