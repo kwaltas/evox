@@ -132,7 +132,7 @@ impl App {
             ("CLICK", "CHKCLICK.WAV"),
             ("CHECKPOINT", "ABCHKPT.01.WAV"),
             ("SKID_01", "SKID_01.WAV"),
-            ("SKID_D1N", "SKID-D1N.WAV"),
+            ("SKID_C1", "SKID-C1.WAV"),
             ("SPLASHDC", "WATER_SPLASH_01.WAV"),
             ("WATER_SPLASH_01", "WATER_SPLASH_01.WAV"),
             ("ICECRACK", "ICECRACK.02.WAV"),
@@ -145,10 +145,6 @@ impl App {
 
         // The music bank is decoded on demand (see `Audio::request_music`);
         // eighteen two-megabyte tracks at boot was a stall and a lot of RAM.
-        // Opening-movie soundtrack, when the movie has been converted.
-        if crate::classic::intro_frames() > 0 {
-            audio.request_music("INTRO", &crate::classic::intro_audio_path());
-        }
 
         let store = Store::new(dirs::profile().join("profile.json"));
         let mut load_error = None;
@@ -160,7 +156,14 @@ impl App {
                 store.load_backup().unwrap_or_default()
             }
         };
-        audio.music_volume = profile.settings.music_volume.max(0.45);
+        audio.master = profile.settings.master_volume.clamp(0.0, 1.0);
+        audio.music_volume = profile.settings.music_volume.clamp(0.0, 1.0);
+        // Opening-movie soundtrack, when the movie has been converted. The
+        // request is queued after the profile so `intro` starts at the saved
+        // volume even though the decode finishes a few frames later.
+        if crate::classic::intro_frames() > 0 {
+            audio.request_music("INTRO", &crate::classic::intro_audio_path());
+        }
 
         // Evo 1 roster, then the Evo 2-only trucks (`tools/evo2_trucks.py`).
         let (trucks, truck_errors) = crate::vehicle::load_roster(std::path::Path::new("."));

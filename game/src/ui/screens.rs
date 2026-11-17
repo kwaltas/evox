@@ -733,18 +733,6 @@ pub fn quick_race(app: &mut App) {
     // (see `Assets::track_preview`), but the missing file stays visible as
     // a label instead of passing the placeholder off as real art.
     let preview = app.assets.track_preview(&app.setup.track);
-    if !app.assets.has_own_track_preview(&app.setup.track) {
-        app.ui.centered(
-            trk_card.x + trk_card.w * 0.5,
-            trk_card.y + trk_card.h * 0.4,
-            14.0,
-            &format!(
-                "no preview: {}.RAW (NOTRACK.RAW)",
-                app.setup.track.to_ascii_uppercase()
-            ),
-            Color::new(1.0, 0.55, 0.45, 1.0),
-        );
-    }
     if let Some(preview) = &preview {
         draw_texture_ex(
             preview,
@@ -755,6 +743,18 @@ pub fn quick_race(app: &mut App) {
                 dest_size: Some(vec2(trk_card.w - 4.0, trk_card.h - 28.0)),
                 ..Default::default()
             },
+        );
+    }
+    if !app.assets.has_own_track_preview(&app.setup.track) {
+        app.ui.text(
+            trk_card.x + 8.0,
+            trk_card.y + 10.0,
+            10.0,
+            &format!(
+                "{}.RAW missing — NOTRACK.RAW",
+                app.setup.track.to_ascii_uppercase()
+            ),
+            Color::new(1.0, 0.55, 0.45, 1.0),
         );
     }
     draw_rectangle_lines(
@@ -1506,6 +1506,7 @@ pub fn settings(app: &mut App) {
             _ => s.invert_y = !s.invert_y,
         }
         app.audio.master = s.master_volume;
+        app.audio.music_volume = s.music_volume;
     }
     nav_keys(app, 5);
     if app.ui.button(

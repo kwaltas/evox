@@ -539,7 +539,10 @@ pub struct Audio {
     /// A voice is actually playing `current_music`.
     music_live: bool,
     pub music_volume: f32,
+    /// `intro(true)` was requested; the sample may still be decoding.
     intro_playing: bool,
+    /// The intro voice actually reached `play_sound`.
+    intro_started: bool,
 }
 
 impl Audio {
@@ -565,6 +568,7 @@ impl Audio {
             music_live: false,
             music_volume: 0.45,
             intro_playing: false,
+            intro_started: false,
         }
     }
 
@@ -669,6 +673,7 @@ impl Audio {
             self.music_used.insert(name.clone(), self.music_clock);
         }
         self.music_clock += 1;
+        self.start_intro_if_ready();
         if let Some(name) = self.current_music.clone() {
             if !self.music_live && self.music.get(&name).is_some_and(|m| m.is_some()) {
                 self.start_music(&name);
@@ -730,28 +735,41 @@ impl Audio {
         self.start_music(name);
     }
 
-    /// Opening-movie soundtrack: started once with the first frame, stopped
-    /// on skip (offroad4x4 `Audio::intro`).
+    /// Opening-movie soundtrack: requested with the first frame, started as
+    /// soon as the decode lands, stopped on skip (offroad4x4 `Audio::intro`).
+    /// The request must survive the decode latency: the intro movie is
+    /// already drawing while `INTRO` is still on the worker thread.
     pub fn intro(&mut self, on: bool) {
         if on == self.intro_playing {
             return;
         }
-        if let Some(Some(s)) = self.music.get("INTRO") {
-            if on {
-                if self.enabled {
-                    play_sound(
-                        s,
-                        PlaySoundParams {
-                            looped: false,
-                            volume: self.master,
-                        },
-                    );
-                }
-            } else {
+        self.intro_playing = on;
+        if on {
+            self.start_intro_if_ready();
+        } else if self.intro_started {
+            if let Some(Some(s)) = self.music.get("INTRO") {
                 stop_sound(s);
             }
+            self.intro_started = false;
         }
-        self.intro_playing = on;
+    }
+
+    fn start_intro_if_ready(&mut self) {
+        if !self.intro_playing || self.intro_started {
+            return;
+        }
+        if let Some(Some(s)) = self.music.get("INTRO") {
+            if self.enabled {
+                play_sound(
+                    s,
+                    PlaySoundParams {
+                        looped: false,
+                        volume: self.music_volume * self.master,
+                    },
+                );
+            }
+            self.intro_started = true;
+        }
     }
 
     pub fn stop_music(&mut self) {
@@ -888,7 +906,7 @@ impl Audio {
                 "gravel" | "dirt" => "SKID_01",
                 "mud" | "water" => "SPLASHDC",
                 "snow" => "ICECRACK",
-                _ => "SKID_D1N",
+                _ => "SKID_C1",
             };
             self.play_at(name, pos, (slip * 0.5).min(0.65), now, 0.45);
         }
@@ -1332,5 +1350,24 @@ mod tests {
                 full * 100.0
             );
         }
+    }
+
+    #[test]
+    fn intro_request_survives_the_decode_latency() {
+        let mut a = Audio::new();
+        a.enabled = false;
+        a.intro(true);
+        assert!(
+            a.intro_playing,
+            "intro request must be remembered while INTRO decodes"
+        );
+        assert!(!a.intro_started, "no intro sample is resident yet");
+        a.intro(true);
+        assert!(
+            a.intro_playing,
+            "repeat frames must not drop the pending request"
+        );
+        a.intro(false);
+        assert!(!a.intro_playing && !a.intro_started);
     }
 }
