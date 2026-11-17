@@ -72,6 +72,8 @@ pub struct App {
     pub trucks: Vec<Truck>,
     pub truck_errors: Vec<String>,
     pub tracks: Vec<(String, PathBuf)>,
+    /// Retail display name from each level's `.SIT` (`!Race Track Name`).
+    pub track_names: HashMap<String, String>,
     pub race: Option<Race>,
     pub editor: Option<crate::editor::EditorState>,
     pub setup: RaceSetup,
@@ -168,6 +170,10 @@ impl App {
         // Evo 1 roster, then the Evo 2-only trucks (`tools/evo2_trucks.py`).
         let (trucks, truck_errors) = crate::vehicle::load_roster(std::path::Path::new("."));
         let tracks = assets.list_tracks();
+        let track_names: HashMap<String, String> = tracks
+            .iter()
+            .filter_map(|(id, _)| assets.track_display_name(id).map(|n| (id.clone(), n)))
+            .collect();
 
         // Restore in-flight progress verbatim; only parse the catalog on a
         // fresh profile so a mid-series save keeps its queue position.
@@ -225,6 +231,7 @@ impl App {
             trucks,
             truck_errors,
             tracks,
+            track_names,
             race: None,
             editor: None,
             setup: RaceSetup {

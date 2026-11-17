@@ -930,6 +930,16 @@ impl Assets {
         out
     }
 
+    /// Retail display name from `WORLD/<ID>.SIT` (`!Race Track Name`),
+    /// e.g. `BAJBEACH` -> `Baja Beach`.
+    pub fn track_display_name(&self, id: &str) -> Option<String> {
+        let path = self
+            .tracks_dir
+            .join("WORLD")
+            .join(format!("{}.SIT", id.to_ascii_uppercase()));
+        crate::terrain::sit_track_name(&path)
+    }
+
     pub fn load_track(&self, id: &str) -> Result<Track, String> {
         if !self
             .list_tracks()

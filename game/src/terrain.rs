@@ -1243,6 +1243,20 @@ fn parse_sit_v7(text: &str) -> Vec<Prop> {
     out
 }
 
+/// Retail track name stored in a `.SIT` (`!Race Track Name` followed by the
+/// display string). Used by the Quick Race list; file stems stay the ids.
+pub fn sit_track_name(path: &std::path::Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = text.lines().map(str::trim);
+    while let Some(line) = lines.next() {
+        if line.eq_ignore_ascii_case("!Race Track Name") {
+            return lines.find(|l| !l.is_empty()).map(str::to_string);
+        }
+    }
+    None
+}
+
 pub(crate) fn parse_sit(path: PathBuf) -> Vec<Prop> {
     let Ok(bytes) = std::fs::read(&path) else {
         return Vec::new();
@@ -1630,6 +1644,13 @@ Path 1 of 1\r\npointCount\r\n9\r\n",
             );
             assert!(m.is_some());
         }
+    }
+
+    #[test]
+    fn sit_race_track_name_is_localized() {
+        require_assets!();
+        let p = root().join("WORLD/BAJBEACH.SIT");
+        assert_eq!(sit_track_name(&p).as_deref(), Some("Baja Beach"));
     }
 
     #[test]

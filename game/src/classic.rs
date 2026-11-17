@@ -15,11 +15,12 @@
 //! 320x240) and `assets/ui2/*.png` (Evo 2 menu backgrounds, buttons, logo).
 //! Each piece falls back to evox's own screens when absent.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 
 use macroquad::prelude::*;
 
+use crate::terrain::{shade_sun, Track, SUN};
 use crate::ui::Ui;
 
 pub const INTRO_DIR: &str = "assets/intro";
@@ -685,9 +686,209 @@ pub fn tach(
     );
 }
 
-/// Outline of the course with every truck on it (no backing panel, like the
-/// original). North-up: world +X to the right, world -Z towards the top.
-pub fn minimap(course: &[Vec3], rivals: &[Vec3], player: Vec3, x: f32, y: f32, size: f32) {
+type RadarCache = Option<(String, i32, i32, i32, Texture2D)>;
+
+thread_local! {
+    static RADAR_MODE: Cell<bool> = const { Cell::new(true) };
+    static RADAR_TEX: RefCell<RadarCache> = const { RefCell::new(None) };
+}
+
+fn radar_texture(track: &Track, player: Vec3, fwd: Vec2, course: &[Vec3]) -> Texture2D {
+    const N: usize = 156;
+    const RANGE_M: f32 = 220.0;
+    let right = vec2(-fwd.y, fwd.x);
+    let heading_bucket = (fwd.y.atan2(fwd.x) / 0.10).round() as i32;
+    let key = (
+        track.id.clone(),
+        (player.x / 12.0) as i32,
+        (player.z / 12.0) as i32,
+        heading_bucket,
+    );
+    if let Some((id, x, z, h, tex)) = RADAR_TEX.with(|c| c.borrow().clone()) {
+        if id == key.0 && x == key.1 && z == key.2 && h == key.3 {
+            return tex;
+        }
+    }
+    let mut img = Image::gen_image_color(N as u16, N as u16, Color::new(0.0, 0.0, 0.0, 0.0));
+    let half = N as f32 * 0.5;
+    for py in 0..N {
+        for px in 0..N {
+            let dx = (px as f32 + 0.5 - half) / half;
+            let dy = (py as f32 + 0.5 - half) / half;
+            let r = (dx * dx + dy * dy).sqrt();
+            if r > 1.0 {
+                continue;
+            }
+            // Heading-up: screen up is the chassis forward vector, screen
+            // right is its perpendicular. The compass letters rotate instead.
+            let wx = player.x + right.x * dx * RANGE_M - fwd.x * dy * RANGE_M;
+            let wz = player.z + right.y * dx * RANGE_M - fwd.y * dy * RANGE_M;
+            let hill = track.height_at(wx, wz);
+            let mut col = shade_sun(
+                track.ground_color_at(wx, wz),
+                track.normal_at_world(wx, wz),
+                SUN,
+            );
+            if track.water_height > 0.0 && hill < track.water_height {
+                let w = track.water_color;
+                col = Color::new(
+                    col.r * 0.35 + w.r * 0.65,
+                    col.g * 0.35 + w.g * 0.65,
+                    col.b * 0.35 + w.b * 0.65,
+                    1.0,
+                );
+            }
+            let a = ((1.0 - r) / 0.06).clamp(0.0, 1.0);
+            img.set_pixel(px as u32, py as u32, Color::new(col.r, col.g, col.b, a));
+        }
+    }
+
+    // Bake the course into the local map like retail's road/tree radar.
+    let road = Color::new(0.90, 0.86, 0.67, 1.0);
+    let n = N as f32;
+    for seg in course.windows(2) {
+        let (a, b) = (seg[0], seg[1]);
+        let steps =
+            (((b.x - a.x).powi(2) + (b.z - a.z).powi(2)).sqrt() / 3.0).clamp(2.0, 80.0) as usize;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let wx = a.x + (b.x - a.x) * t;
+            let wz = a.z + (b.z - a.z) * t;
+            let d = vec2(wx - player.x, wz - player.z);
+            let sx = d.dot(right) / RANGE_M;
+            let sy = -d.dot(fwd) / RANGE_M;
+            if sx * sx + sy * sy > 0.94 {
+                continue;
+            }
+            let px = (sx * 0.5 + 0.5) * n;
+            let py = (sy * 0.5 + 0.5) * n;
+            for oy in -1..=1 {
+                for ox in -1..=1 {
+                    let x = px as i32 + ox;
+                    let y = py as i32 + oy;
+                    if x >= 0 && y >= 0 && x < N as i32 && y < N as i32 {
+                        img.set_pixel(x as u32, y as u32, road);
+                    }
+                }
+            }
+        }
+    }
+
+    let tex = Texture2D::from_image(&img);
+    tex.set_filter(FilterMode::Linear);
+    RADAR_TEX.with(|c| {
+        *c.borrow_mut() = Some((key.0, key.1, key.2, key.3, tex.clone()));
+    });
+    tex
+}
+
+/// Top-right radar. Retail defaults to a circular, heading-up local radar with
+/// rotating N/S/E/W markers and the course baked into the terrain; `M` toggles
+/// the full-course wireframe.
+pub fn minimap(
+    ui: &Ui,
+    track: &Track,
+    course: &[Vec3],
+    rivals: &[Vec3],
+    player: Vec3,
+    forward: Vec3,
+    x: f32,
+    y: f32,
+    size: f32,
+) {
+    if is_key_pressed(KeyCode::M) {
+        RADAR_MODE.with(|c| c.set(!c.get()));
+    }
+    let (cx, cy) = (x + size * 0.5, y + size * 0.5);
+    let mut fwd = vec2(forward.x, forward.z).normalize_or_zero();
+    if fwd.length_squared() < 1e-6 {
+        fwd = vec2(0.0, -1.0);
+    }
+    let right = vec2(-fwd.y, fwd.x);
+    if RADAR_MODE.with(|c| c.get()) {
+        draw_circle(cx, cy, size * 0.53, Color::new(0.01, 0.02, 0.05, 0.8));
+        let tex = radar_texture(track, player, fwd, course);
+        draw_texture_ex(
+            &tex,
+            x,
+            y,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(size, size)),
+                ..Default::default()
+            },
+        );
+        draw_circle_lines(cx, cy, size * 0.5, 2.5, Color::new(0.88, 0.85, 0.75, 0.95));
+        draw_circle_lines(
+            cx,
+            cy,
+            size * 0.5 - 4.0,
+            1.0,
+            Color::new(0.1, 0.12, 0.18, 0.8),
+        );
+        for i in 0..36 {
+            let a = i as f32 / 36.0 * std::f32::consts::TAU;
+            let (s, c) = a.sin_cos();
+            let long = i % 9 == 0;
+            let r0 = size * 0.5 - if long { 8.0 } else { 4.0 };
+            let r1 = size * 0.5 - 1.0;
+            draw_line(
+                cx + s * r0,
+                cy - c * r0,
+                cx + s * r1,
+                cy - c * r1,
+                if long { 2.0 } else { 1.0 },
+                Color::new(0.85, 0.82, 0.72, 0.9),
+            );
+        }
+
+        // Compass letters rotate with the chassis: "up" is always forward.
+        for (label, d) in [
+            ("N", vec2(0.0, -1.0)),
+            ("E", vec2(1.0, 0.0)),
+            ("S", vec2(0.0, 1.0)),
+            ("W", vec2(-1.0, 0.0)),
+        ] {
+            let sx = d.dot(right);
+            let sy = -d.dot(fwd);
+            let px = cx + sx * size * 0.44;
+            let py = cy + sy * size * 0.44;
+            text_o(
+                ui,
+                label,
+                px - width(ui, label, 17.0) * 0.5,
+                py + 6.0,
+                17.0,
+                WHITE,
+            );
+        }
+
+        // Local trucks: dots at their offset from the player, inside the ring.
+        for o in rivals {
+            let d = vec2(o.x - player.x, o.z - player.z);
+            let dx = d.dot(right) / 220.0 * size * 0.5;
+            let dy = -d.dot(fwd) / 220.0 * size * 0.5;
+            if dx * dx + dy * dy <= (size * 0.46).powi(2) {
+                draw_circle(cx + dx, cy + dy, 4.0, Color::new(0.95, 0.18, 0.12, 1.0));
+            }
+        }
+        // Player chevron, always pointing up in the heading-up map.
+        draw_triangle(
+            vec2(cx, cy - 9.0),
+            vec2(cx - 6.0, cy + 6.0),
+            vec2(cx + 6.0, cy + 6.0),
+            Color::new(0.08, 0.32, 0.08, 1.0),
+        );
+        draw_triangle(
+            vec2(cx, cy - 6.0),
+            vec2(cx - 4.0, cy + 4.0),
+            vec2(cx + 4.0, cy + 4.0),
+            GOOD,
+        );
+        return;
+    }
+
+    // Wireframe fallback (toggled with `M`).
     if course.len() < 2 {
         return;
     }

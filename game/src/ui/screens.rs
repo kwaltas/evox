@@ -449,6 +449,28 @@ fn main_menu_classic(app: &mut App) {
 /// Display spelling for a shipped level id. The ids are upper-case file
 /// stems; the `.LVL`/`SERIES` data carries no long name, so the handful of
 /// run-together ones are expanded here and everything else is title-cased.
+fn track_label(app: &App, id: &str) -> String {
+    let name = app
+        .track_names
+        .get(id)
+        .cloned()
+        .unwrap_or_else(|| track_title(id));
+    // Series variants are stored without a separator (`Alaska1`); retail
+    // reads them as `Alaska 1`.
+    let bytes = name.as_bytes();
+    if bytes.last().is_some_and(u8::is_ascii_digit) {
+        if let Some(i) = bytes.iter().rposition(|b| !b.is_ascii_digit()) {
+            if bytes[i].is_ascii_alphabetic() {
+                let mut out = name[..=i].to_string();
+                out.push(' ');
+                out.push_str(&name[i + 1..]);
+                return out;
+            }
+        }
+    }
+    name
+}
+
 fn track_title(id: &str) -> String {
     let up = id.to_ascii_uppercase();
     let fixed = match up.as_str() {
@@ -691,7 +713,7 @@ pub fn quick_race(app: &mut App) {
         }
         text_o(
             &app.ui,
-            &track_title(name),
+            &track_label(app, name),
             r.x + 14.0,
             r.y + r.h - 6.0,
             22.0,
@@ -745,18 +767,6 @@ pub fn quick_race(app: &mut App) {
             },
         );
     }
-    if !app.assets.has_own_track_preview(&app.setup.track) {
-        app.ui.text(
-            trk_card.x + 8.0,
-            trk_card.y + 10.0,
-            10.0,
-            &format!(
-                "{}.RAW missing — NOTRACK.RAW",
-                app.setup.track.to_ascii_uppercase()
-            ),
-            Color::new(1.0, 0.55, 0.45, 1.0),
-        );
-    }
     draw_rectangle_lines(
         trk_card.x,
         trk_card.y,
@@ -769,7 +779,7 @@ pub fn quick_race(app: &mut App) {
         trk_card.x + trk_card.w * 0.5,
         trk_card.y + trk_card.h - 22.0,
         15.0,
-        &track_title(&app.setup.track),
+        &track_label(app, &app.setup.track),
         MENU_SEL,
     );
 
@@ -1728,9 +1738,12 @@ pub fn race(app: &mut App) {
     // top-right: course outline with every truck
     let rivals: Vec<Vec3> = race.opponents.iter().map(|o| o.vehicle.pos).collect();
     crate::classic::minimap(
+        ui,
+        &race.track,
         &race.course,
         &rivals,
         race.player.pos,
+        race.player.forward(),
         sw - 196.0,
         14.0,
         180.0,

@@ -740,6 +740,10 @@ impl Renderer {
         wheels.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
         let body_dist = (body_pos - eye).length_squared();
 
+        // The preview is drawn outside the race pass; bind the same
+        // depth-tested world material so wheels/body occlude correctly and
+        // the Lambert vertex shading is actually visible.
+        let lit = self.bind_world_material(false);
         for &(_axle, side, w_pos, d) in &wheels {
             if d < body_dist {
                 continue;
@@ -774,6 +778,9 @@ impl Renderer {
                     draw_scratch(&mut self.scratch, &w.mesh, w_pos, basis, s, WHITE, eye);
                 }
             }
+        }
+        if lit {
+            self.unbind_world_material();
         }
     }
 
