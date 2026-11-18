@@ -477,19 +477,25 @@ impl Race {
         );
         audio.set_listener(self.player.pos);
 
-        // Opponents.
+        // Opponents. Snapshot chassis positions for rival awareness: a rival
+        // inside the forward cone makes the driver lift or brake rather than
+        // rear-ending the truck ahead.
+        let rival_positions: Vec<Vec3> = std::iter::once(self.player.pos)
+            .chain(self.opponents.iter().map(|o| o.vehicle.pos))
+            .collect();
         for o in &mut self.opponents {
             if self.phase != Phase::Racing {
                 break;
             }
             let ahead = o.progress;
-            let ai_input = o.driver.tick(
+            let ai_input = o.driver.tick_with_rivals(
                 o.vehicle.pos,
                 o.vehicle.vel,
                 o.vehicle.yaw(),
                 ahead,
                 dt,
                 1.0,
+                &rival_positions,
             );
             let ai_input = air_level(ai_input, &o.vehicle, &sample);
             o.vehicle.step(&ai_input, &sample);
