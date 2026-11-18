@@ -539,34 +539,114 @@ fn dial_art(
             ..Default::default()
         },
     );
-    if let Some(needle) = needle {
-        draw_needle(needle, cx, cy, r, value, max);
+    if needle.is_some() {
+        draw_needle(cx, cy, r, value, max);
     }
     true
 }
 
-/// The retail needle sprite, cropped to its blade column and rotated about
-/// the dial hub. The 64px art is drawn at `r` px with linear filtering, so the
-/// keyed alpha ramp keeps the edge soft instead of stair-stepped.
-fn draw_needle(needle: &Texture2D, cx: f32, cy: f32, r: f32, value: f32, max: f32) {
-    // Drop the full-width horizontal balance bar; it would read as a second
-    // needle lying across the face.
-    let src = Rect::new(22.0, 0.0, 20.0, 64.0);
-    let sw = r * src.w / 64.0;
+/// Re-draws the printed "x1000/min" legend of the tachometer face over the
+/// needle. The legend sits above the hub, where a mid-range needle crosses
+/// it, so the blade used to hide it. The box is in 512 px face-art units and
+/// scales with whichever face texture is loaded (HD or retail).
+fn face_legend(face: &Texture2D, cx: f32, cy: f32, r: f32) {
+    let fw = face.width();
+    let s = fw / 512.0;
+    let k = 2.0 * r / fw;
+    let legend = legend_texture(face);
     draw_texture_ex(
-        needle,
-        cx - sw * 0.5,
-        cy - r * (54.0 / 64.0),
+        &legend,
+        cx - r + 141.0 * s * k,
+        cy - r + 213.0 * s * k,
         WHITE,
         DrawTextureParams {
-            dest_size: Some(vec2(sw, r)),
-            source: Some(src),
-            rotation: (90.0 - dial_angle(value, max)).to_radians(),
-            pivot: Some(vec2(cx, cy)),
+            dest_size: Some(vec2(legend.width() * k, legend.height() * k)),
             ..Default::default()
         },
     );
-    draw_circle(cx, cy, r * 0.05, Color::new(0.35, 0.14, 0.0, 0.9));
+}
+
+thread_local! {
+    static LEGEND_TEX: RefCell<Option<Texture2D>> = const { RefCell::new(None) };
+}
+
+/// The legend cut out of the face art as its white text only: pixels that are
+/// not near-white become transparent, so the grey face behind it does not
+/// paint over the needle. Built once from the loaded face texture.
+fn legend_texture(face: &Texture2D) -> Texture2D {
+    LEGEND_TEX.with(|cache| {
+        if let Some(tex) = cache.borrow().as_ref() {
+            return tex.clone();
+        }
+        let src = face.get_texture_data();
+        let fw = src.width as usize;
+        let s = fw as f32 / 512.0;
+        let (x0, y0) = ((141.0 * s) as usize, (213.0 * s) as usize);
+        let (w, h) = ((238.0 * s) as usize, (25.0 * s) as usize);
+        let mut bytes = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y0 + y) * fw + x0 + x) * 4;
+                let p = &src.bytes[i..i + 4];
+                let text = p[0].min(p[1]).min(p[2]) > 200;
+                bytes.extend_from_slice(&[p[0], p[1], p[2], if text { p[3] } else { 0 }]);
+            }
+        }
+        let tex = Texture2D::from_rgba8(w as u16, h as u16, &bytes);
+        *cache.borrow_mut() = Some(tex.clone());
+        tex
+    })
+}
+
+/// The needle, drawn as vector geometry: a tapered orange blade with a short
+/// counterweight, a dark outline and a soft drop shadow, pivoting on the hub.
+/// The retail sprite was replaced because its colour-keyed edge looked
+/// jagged and carried a dark halo at the blade.
+fn draw_needle(cx: f32, cy: f32, r: f32, value: f32, max: f32) {
+    let a = dial_angle(value, max).to_radians();
+    let dir = vec2(a.cos(), -a.sin());
+    let perp = vec2(-dir.y, dir.x);
+    let hub = vec2(cx, cy);
+    let tip = hub + dir * r * 0.80;
+    let tail = hub - dir * r * 0.16;
+    let base_w = r * 0.060;
+    let tip_w = r * 0.014;
+    let tail_w = r * 0.045;
+    let body = Color::new(1.0, 0.47, 0.08, 1.0);
+    let edge = Color::new(0.40, 0.13, 0.0, 1.0);
+    let shadow = Color::new(0.0, 0.0, 0.0, 0.35);
+    let off = vec2(1.5, 1.5) * (r / 78.0).max(0.5);
+
+    // Blade and counterweight as two triangle fans over the same outline.
+    let blade = |o: Vec2, col: Color| {
+        let b1 = hub + perp * base_w + o;
+        let b2 = hub - perp * base_w + o;
+        let t1 = tip + perp * tip_w + o;
+        let t2 = tip - perp * tip_w + o;
+        let k1 = tail + perp * tail_w + o;
+        let k2 = tail - perp * tail_w + o;
+        draw_triangle(b1, t1, t2, col);
+        draw_triangle(b1, t2, b2, col);
+        draw_triangle(b1, k1, k2, col);
+        draw_triangle(b1, k2, b2, col);
+    };
+    blade(off, shadow);
+    blade(vec2(0.0, 0.0), body);
+
+    // Thin outline so the blade edge stays crisp against the dark face.
+    let w = (r * 0.012).max(1.0);
+    let b1 = hub + perp * base_w;
+    let b2 = hub - perp * base_w;
+    let t1 = tip + perp * tip_w;
+    let t2 = tip - perp * tip_w;
+    let k1 = tail + perp * tail_w;
+    let k2 = tail - perp * tail_w;
+    for (p, q) in [(b1, t1), (b2, t2), (t1, t2), (b1, k1), (b2, k2), (k1, k2)] {
+        draw_line(p.x, p.y, q.x, q.y, w, edge);
+    }
+
+    draw_circle(cx, cy, r * 0.075, edge);
+    draw_circle(cx, cy, r * 0.05, Color::new(0.25, 0.10, 0.0, 1.0));
 }
 
 /// A round instrument drawn the way the original does: white ticks and
@@ -620,8 +700,8 @@ fn dial(
     // Fallback dials get the same machined rim as the retail face so the
     // km/h instrument still reads as a finished gauge.
     draw_circle_lines(cx, cy, r - 1.0, 2.0, Color::new(0.78, 0.84, 0.88, 0.85));
-    if let Some(needle) = needle {
-        draw_needle(needle, cx, cy, r, value.clamp(0.0, max), max);
+    if needle.is_some() {
+        draw_needle(cx, cy, r, value.clamp(0.0, max), max);
     } else {
         // Vector fallback when the retail sprite is missing.
         let a = ang(value.clamp(0.0, max));
@@ -736,6 +816,9 @@ pub fn tach(
     let max = ((redline / 1000.0).ceil() + 1.0) * 1000.0;
     // The retail RPM face is labelled 0-8 x1000.
     let tex_dial = face.is_some() && dial_art(face, needle, cx, cy, r, rpm, 8000.0);
+    if let (true, Some(face)) = (tex_dial, face) {
+        face_legend(face, cx, cy, r);
+    }
     if !tex_dial {
         dial(
             ui,
@@ -761,13 +844,18 @@ pub fn tach(
     }
     // Just the numeral from the ODOM gear cell: the white ring baked into the
     // cell reads as a hard badge, unlike the retail indicator.
+    // A dark badge with a white ring, centred on the digit so the glyph sits
+    // in the middle of it (the 9x10 cell is drawn from its own top-left).
     let row = gear.min(7) as f32;
+    let (gx, gy) = (cx, cy + 34.0);
+    draw_circle(gx, gy, 11.0, Color::new(0.0, 0.0, 0.0, 0.55));
+    draw_circle_lines(gx, gy, 11.0, 2.0, WHITE);
     sheet(
         odom,
         Rect::new(136.0, 7.0 + 28.0 * row, 9.0, 10.0),
-        cx - 9.0,
-        cy + 36.0,
-        2.0,
+        gx - 4.5,
+        gy - 5.0,
+        1.0,
         WHITE,
     );
 }
