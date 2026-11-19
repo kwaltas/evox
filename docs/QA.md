@@ -39,7 +39,7 @@ behaviour.
 | Gate | Catches |
 |---|---|
 | unit tests | parser bounds, expression algebra, save tamper, physics settle/brake, prop colliders, collision impulse scaling, netcode round-trip, TTL sweep |
-| `--self-test` | whole-catalog parse, 192 vehicle definitions, 61 heightmaps, collider set, audio/AI/course presence, packaging |
+| `--self-test` | whole-catalog parse, 150 vehicle definitions, 60 heightmaps, collider set, audio/AI/course presence, packaging |
 | chunk cache test | nearest-first build order, per-frame budget, grid clamping |
 | `pod.py --self-test` | both POD revisions, compressed and plain, truncation, traversal |
 | manifest verify | truncated extraction, disk rot |
@@ -50,12 +50,13 @@ behaviour.
    thin sign boards are therefore a little oversized and bridges/deck props
    are solid. Props draw one model per `.SIT` box without instancing, so dense
    tracks can cost a few hundred draw calls.
-2. **61 levels are in this extraction**: 16 Evo 1 and 45 imported Evo 2
-   exclusives (`tools/evo2_tracks.py`). Every one ships a 256×256 heightmap
-   (15 Evo 1 maps in `texture/texture/DATA`, `MATT.RAW` in `texture/ui/DATA`,
-   the rest in their Evo 2 pods), so none of them is flat. `.RTD` is all zeros
+2. **60 levels are in this extraction** (`evo2-only` intake, Evo 2 pods
+   only): the 15 Evo 1 tracks that Evo 2 re-ships and 45 Evo 2 exclusives
+   (`tools/evo2_tracks.py`). Every one ships a 256×256 heightmap in
+   `texture/texture/DATA`, so none of them is flat. `.RTD` is all zeros
    and is no longer used as a heightmap.
-3. **`MATT` is the only level with no lap data.** It has no AI recording and
+3. **`MATT` (Evo 1 test map, absent from the `evo2-only` intake) has no lap
+   data.** If an Evo 1 tree supplies it, it has no AI recording and
    its 20 `.SIT` path slots hold at most 3 points, so the race starts on a
    generated circuit from its `.SIT` spawn. Its grid is a straight line in the
    file, so rival placement there is approximate. Every other level uses its

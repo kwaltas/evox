@@ -8,8 +8,8 @@ binaries and data are on this machine and are the specification.
 * `docs/PORT_REFERENCE.md` — reference paths, `.TRK`/terrain/audio formats,
   physics model, guardrails, runbook.
 * `docs/ARCHITECTURE.md`, `docs/PHYSICS.md`, `docs/QA.md`, `docs/MODDING.md`.
-* `tools/evo2_tracks.py` — imports the 45 Evo 2-exclusive levels (61 total with
-  the 16 Evo 1 ones) and reports the `.SIT` `*** Course ***` gates and
+* `tools/evo2_tracks.py` — imports the Evo 2 levels (60 on this `evo2-only`
+  intake: the 15 Evo 1 tracks Evo 2 re-ships plus 45 exclusives) and reports the `.SIT` `*** Course ***` gates and
   `*** Paths ***` splines each level carries; both are parsed at runtime by
   `terrain::parse_course`.
 
@@ -27,8 +27,10 @@ binaries and data are on this machine and are the specification.
 4. **No silent fallbacks.** Missing heightmap, texture list, model or sound
    must fail visibly. `MATT.RAW` exists as both a 131 072-byte heightmap and a
    65 536-byte preview — check the size.
-5. **Be honest about coverage.** The extracted tree has 16 Evo 1 levels plus 45
-   imported Evo 2-exclusive levels (61 total), all with real heightmaps.
+5. **Be honest about coverage.** The `evo2-only` extraction has 60 levels (15
+   Evo 1 tracks re-shipped by Evo 2 plus 45 Evo 2 exclusives) and 150 vehicle
+   definitions, all levels with real heightmaps. The Evo 1 test map `MATT` is
+   not part of this intake.
    `.RTD` files are all zeros, not heightmaps.
 6. **Imperial in, SI simulated.** Convert once at load with `vehicle::FT`,
    `FT_LB`, `LB`.

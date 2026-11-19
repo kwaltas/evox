@@ -44,6 +44,11 @@ this repository.
   heightmap. The 16 Evo 1 `.RTD` files are all zeros and are *not* heightmaps.
   "All 30 tracks" describes the retail Evo 1 disc set; the extracted tree is 61
   levels because it also holds the Evo 2 exclusives.
+* **`evo2-only` branch (2026-11-18):** intake reads Evo 2 pods only
+  (`tools/setup_evo2.py`), so the tree has **60 levels** — 15 Evo 1 tracks
+  re-shipped by Evo 2 plus the 45 exclusives, all heightmaps in
+  `texture/texture/DATA` — and **150 vehicle definitions**. `MATT` is absent;
+  the counts above describe the earlier Evo 1 + Evo 2 tree.
 
 ## 2. Guardrails
 
