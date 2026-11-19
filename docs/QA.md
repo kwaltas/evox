@@ -68,17 +68,17 @@ behaviour.
    be replayed with a fresh install id.
 8. **No demo recording.** The replay camera cycles angles after the flag but
    frames are not stored for later playback.
-8. **Terrain binds the dominant `.TEX` albedo** with per-material vertex tints;
+9. **Terrain binds the dominant `.TEX` albedo** with per-material vertex tints;
    blend layers are parsed but not composited, and MGRASS1 is a cutout mask,
    not a ground albedo.
-9. **Chunk builds are budgeted by speed (2-8 per frame)** and prefetched six
+10. **Chunk builds are budgeted by speed (2-8 per frame)** and prefetched six
    chunks ahead of travel; the chunk under the player ignores the budget and
    is never evicted, so the "brown void" only reappears on a track whose
    heightmap is empty.
-10. **Shop tabs use the generic ICONA–ICOND art**, not per-category icons.
-11. **Buttons fall back to `BUTTON3`** because the `EDBTN*` frames ship as
+11. **Shop tabs use the generic ICONA–ICOND art**, not per-category icons.
+12. **Buttons fall back to `BUTTON3`** because the `EDBTN*` frames ship as
     `.PBM`, which the ART loader does not read yet.
-11. **A mod truck whose mesh is not installed borrows the Blazer body** for
+13. **A mod truck whose mesh is not installed borrows the Blazer body** for
     the session; nothing is drawn with placeholder primitives, and the file is
     listed in `Renderer::missing`.
 

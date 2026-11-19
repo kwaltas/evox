@@ -17,8 +17,13 @@ pub const FT: f32 = crate::vehicle::FT;
 
 /// Pure-pursuit geometry. The controller aims at a point on the racing line
 /// one look-ahead distance ahead and converts the bearing error into the
-/// bicycle-model steering angle `δ = atan2(2·L·sin α, l_d)`. The physics rack
-/// then clamps and rates it, so the AI never exceeds the player's steering.
+/// bicycle-model steering angle `δ = atan2(2·L·sin α, l_d)`. That angle is
+/// turned into rack input with `physics::steer_lock_at`, the same
+/// speed-sensitive lock the rack applies, so the AI never exceeds the
+/// player's steering and does not under-steer at speed.
+///
+/// Defaults until `Driver::fit_to` reads the real truck: `physics::Config`
+/// `steer_max` and a mid-size wheelbase.
 const WHEELBASE_M: f32 = 2.8;
 const MAX_STEER_RAD: f32 = 0.55;
 const LOOKAHEAD_MIN_M: f32 = 7.0;
@@ -266,6 +271,10 @@ pub struct Driver {
     pub reverse: f32,
     pub finished: bool,
     pub name: String,
+    /// Pure-pursuit wheelbase `L` (m).
+    pub wheelbase_m: f32,
+    /// Standstill front-wheel lock (rad) of the driven truck.
+    pub steer_lock_rad: f32,
 }
 
 impl Driver {
@@ -279,7 +288,16 @@ impl Driver {
             reverse: 0.0,
             finished: false,
             name: name.to_string(),
+            wheelbase_m: WHEELBASE_M,
+            steer_lock_rad: MAX_STEER_RAD,
         }
+    }
+
+    /// Use the driven truck's wheelbase and standstill steering lock for the
+    /// pure-pursuit geometry.
+    pub fn fit_to(&mut self, vehicle: &crate::physics::Vehicle) {
+        self.wheelbase_m = vehicle.truck.wheelbase_m().max(1.5);
+        self.steer_lock_rad = vehicle.steer_lock_rad();
     }
 
     pub fn tick(
@@ -346,8 +364,11 @@ impl Driver {
         let cur = (-yaw.cos()).atan2(-yaw.sin());
         let alpha = wrap_pi(want - cur);
         // Bicycle-model pure pursuit: δ = atan2(2·L·sin α, l_d).
-        let delta = (2.0 * WHEELBASE_M * alpha.sin()).atan2(lookahead.max(1.0));
-        let steer = (delta / MAX_STEER_RAD).clamp(-1.0, 1.0);
+        let delta = (2.0 * self.wheelbase_m * alpha.sin()).atan2(lookahead.max(1.0));
+        // Same speed-sensitive lock as the rack: at 20 m/s full input is only
+        // ~0.24 rad, so dividing by the standstill lock under-steered ~2.3×.
+        let lock = crate::physics::steer_lock_at(self.steer_lock_rad, v_fwd);
+        let steer = (delta / lock).clamp(-1.0, 1.0);
 
         // Speed target: authored caps ahead, tightened by the sharpest
         // curvature the line is about to ask for.
@@ -565,6 +586,35 @@ mod tests {
             1.0,
         );
         assert!(left.steer > 0.02, "steer {}", left.steer);
+    }
+
+    /// The rack shrinks full lock with speed (`physics::steer_lock_at`). The
+    /// AI must ask for the pure-pursuit wheel angle in those terms; dividing
+    /// by the standstill lock under-steered ~2.3× at 20 m/s and sent trucks
+    /// wide into corners (THEHILL off line, DEVIL rolls in `drive_report`).
+    #[test]
+    fn pure_pursuit_rack_input_matches_the_speed_sensitive_lock() {
+        let v = 20.0;
+        let pos = vec3(1.5, 0.0, 0.0);
+        let mut d = Driver::new(straight_line(), 0.9, "bot", 0);
+        let input = d.tick(pos, vec3(0.0, 0.0, -v), 0.0, 0, 1.0 / 60.0, 1.0);
+
+        let lead = (d.line.nodes[d.cursor].pos - pos).length();
+        let l_d = (LOOKAHEAD_MIN_M + 0.7 * v - lead).clamp(4.0, LOOKAHEAD_MAX_M);
+        let target = d.line.point_ahead(d.cursor, l_d);
+        let to = target - pos;
+        let alpha = wrap_pi(to.z.atan2(to.x) - (-1.0f32).atan2(0.0));
+        let delta = (2.0 * WHEELBASE_M * alpha.sin()).atan2(l_d);
+        let wheel = input.steer * crate::physics::steer_lock_at(MAX_STEER_RAD, v);
+        assert!(
+            (wheel - delta).abs() < 1e-3,
+            "wheel angle {wheel} rad, pure pursuit wants {delta} rad"
+        );
+        assert!(
+            input.steer.abs() > delta.abs() / MAX_STEER_RAD * 1.5,
+            "rack input {} ignores the speed falloff",
+            input.steer
+        );
     }
 
     #[test]

@@ -91,6 +91,13 @@ const IMPACT_COOLDOWN: f32 = 0.30;
 pub const AIR_PITCH_ACCEL: f32 = 1.0;
 pub const AIR_YAW_ACCEL: f32 = 1.2;
 const STEER_SPEED_FALLOFF: f32 = 15.0;
+
+/// Front-wheel angle that full rack input (`steer = ±1`) produces at forward
+/// speed `v_fwd`, given the standstill lock. Shared by the rack in `substep`
+/// and the AI so a requested wheel angle maps to the same rack input.
+pub fn steer_lock_at(lock_rad: f32, v_fwd: f32) -> f32 {
+    (lock_rad / (1.0 + v_fwd.abs() / STEER_SPEED_FALLOFF)).clamp(0.08, 0.75)
+}
 const STEER_RATE: f32 = 3.0;
 const STEER_RETURN_RATE: f32 = 4.5;
 
@@ -334,6 +341,12 @@ impl Vehicle {
         self.rot * Vec3::NEG_Z
     }
 
+    /// Standstill front-wheel lock (rad): the `.TRK` axle 0 `maxAngle`,
+    /// scaled by the tuning `steer_max` relative to its 0.55 rad default.
+    pub fn steer_lock_rad(&self) -> f32 {
+        self.truck.axles[0].max_angle.max(0.35) * self.config.steer_max / 0.55
+    }
+
     pub fn right(&self) -> Vec3 {
         self.rot * Vec3::X
     }
@@ -557,8 +570,7 @@ impl Vehicle {
 
         // ---- steering: rate-limited rack, speed sensitive --------------------
         self.steer = self.steer.clamp(-1.0, 1.0);
-        let max_steer = self.truck.axles[0].max_angle.max(0.35) * self.config.steer_max / 0.55;
-        let max_steer = (max_steer / (1.0 + v_fwd.abs() / STEER_SPEED_FALLOFF)).clamp(0.08, 0.75);
+        let max_steer = steer_lock_at(self.steer_lock_rad(), v_fwd);
         let target = input.steer.clamp(-1.0, 1.0) * max_steer;
         let rate = if input.steer.abs() < 0.01 {
             STEER_RETURN_RATE

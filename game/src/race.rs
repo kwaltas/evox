@@ -267,6 +267,7 @@ impl Race {
             let mut truck = cfg.ai_vehicles[i].clone();
             truck.paint_index = (i * 5 + 2) % truck.paints.len().max(1);
             let mut v = Vehicle::new(truck);
+            d.fit_to(&v);
             let (p, yaw) = ai::grid_slot(&track, &line, i + 4);
             v.reset_on_ground(p.x, p.z, yaw, &track);
             opponents.push(Opponent {
@@ -291,9 +292,11 @@ impl Race {
                 cfg.track_id
             );
         }
-        let pilot = std::env::var("EVOX_AUTODRIVE")
-            .ok()
-            .map(|_| ai::Driver::new(cfg.lines[0].clone(), 0.85, "pilot", 0));
+        let pilot = std::env::var("EVOX_AUTODRIVE").ok().map(|_| {
+            let mut d = ai::Driver::new(cfg.lines[0].clone(), 0.85, "pilot", 0);
+            d.fit_to(&player);
+            d
+        });
         let mut accents = Vec::new();
         for i in 0..24 {
             if let Some(p) = track.props.get(i * 7) {

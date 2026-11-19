@@ -29,14 +29,19 @@ The target is one speed-scaled look-ahead down the line:
 ```
 l_d = clamp(7 + 0.7·v − lead, 4, 24) m
 α   = wrap(atan2(to.z, to.x) − heading_angle)
-δ   = atan2(2·L·sin α, l_d),  L = 2.8 m
-steer = clamp(δ / 0.55, −1, 1)
+δ   = atan2(2·L·sin α, l_d),  L = truck wheelbase
+steer = clamp(δ / lock(v), −1, 1)
+lock(v) = physics::steer_lock_at(maxAngle, v) = maxAngle / (1 + |v| / 15)
 ```
 
 `lead` is the distance already travelled past the cursor node, so the aim point
 stays a consistent distance ahead instead of stretching on sparse recordings.
 `steer` is the same normalised rack input a player produces; `physics` applies
-the rack rate limit, speed-sensitive falloff and tyre forces.
+the rack rate limit and tyre forces. The rack's full lock shrinks with speed,
+so δ is divided by that same speed-sensitive lock (`Driver::fit_to` reads the
+truck's wheelbase and `.TRK` axle-0 `maxAngle`). Dividing by the standstill
+0.55 rad instead under-steered ~2.3× at 20 m/s: trucks ran wide, left the line
+on THEHILL and rolled to 63° on DEVIL in `drive_report`.
 
 ## Speed control
 
