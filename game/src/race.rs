@@ -263,6 +263,15 @@ pub struct Race {
     /// QA autopilot (`EVOX_AUTODRIVE=1`): drives the player along the first
     /// recorded line so collision and handling can be observed hands-free.
     pub pilot: Option<ai::Driver>,
+    /// Landing assist for the human player: while airborne the truck is held
+    /// at the slope it will land on (`air_level`) instead of the held gas or
+    /// brake pitching it. On by default with touch controls, where the gas
+    /// button stays pressed through every jump.
+    pub air_assist: bool,
+    /// QA only: the autopilot drives like a thumb on the touch buttons
+    /// (steering all-or-nothing, gas held) and gets no landing help unless
+    /// `air_assist` is on.
+    pub pilot_thumb: bool,
 }
 
 pub struct RaceConfig<'a> {
@@ -410,6 +419,24 @@ fn air_level(mut input: Input, v: &Vehicle, sample: &dyn Fn(f32, f32) -> (f32, S
     input.throttle = stick.max(0.0);
     input.brake = (-stick).max(0.0);
     input.steer = 0.0;
+    input
+}
+
+/// What a thumb on the touch buttons makes of a driver's input: steering is
+/// all-or-nothing past a dead zone and the gas stays held unless braking.
+fn thumb(mut input: Input) -> Input {
+    input.steer = if input.steer.abs() > 0.35 {
+        input.steer.signum()
+    } else {
+        0.0
+    };
+    if input.brake > 0.3 {
+        input.throttle = 0.0;
+        input.brake = 1.0;
+    } else {
+        input.throttle = 1.0;
+        input.brake = 0.0;
+    }
     input
 }
 
@@ -568,6 +595,8 @@ impl Race {
             accents,
             colliders,
             pilot,
+            air_assist: crate::ui::touch_ui(),
+            pilot_thumb: false,
         })
     }
 
@@ -636,11 +665,21 @@ impl Race {
         } else {
             input
         };
+        let pilot_input = if self.pilot.is_some() && self.pilot_thumb {
+            thumb(pilot_input)
+        } else {
+            pilot_input
+        };
         // The autopilot obeys the start like a player: held on the brakes
         // until the countdown ends.
         let input = self.player_input(pilot_input);
         let sample = |x: f32, z: f32| self.track.sample(x, z);
-        let input = if self.pilot.is_some() {
+        let assisted = if self.pilot.is_some() && !self.pilot_thumb {
+            true
+        } else {
+            self.air_assist
+        };
+        let input = if assisted {
             air_level(input, &self.player, &sample)
         } else {
             input
@@ -1567,6 +1606,8 @@ pub(crate) mod drive_qa {
         pub mean_kmh: f32,
         /// Share of racing time more than 15 m from the recorded line.
         pub off_line: f32,
+        /// Share of racing time rolled or pitched past 60 deg (tumbling).
+        pub tumbling: f32,
     }
 
     /// Directory that holds `assets/` (tests run from `game/`).
@@ -1636,6 +1677,17 @@ pub(crate) mod drive_qa {
     }
 
     pub fn drive(track_id: &str, seconds: f32) -> Metrics {
+        drive_with(
+            track_id,
+            seconds,
+            std::env::var("EVOX_PILOT_THUMB").is_ok(),
+            std::env::var("EVOX_AIR_ASSIST").is_ok(),
+        )
+    }
+
+    /// `thumb`: drive like a touch player (see `thumb`); `assist`: the
+    /// player's landing assist.
+    pub fn drive_with(track_id: &str, seconds: f32, thumb: bool, assist: bool) -> Metrics {
         let track = Track::load(track_id, &data("track/track")).expect("track loads");
         let lines = crate::assets::read_ai_lines(&data("data/data/AI"), track_id);
         let (trucks, _) = crate::vehicle::load_roster(repo_root());
@@ -1660,11 +1712,14 @@ pub(crate) mod drive_qa {
         )
         .expect("race builds");
         race.pilot = Some(ai::Driver::new(lines[0].clone(), pilot_skill(), "pilot", 0));
+        race.pilot_thumb = thumb;
+        race.air_assist = assist;
         let mut audio = Audio::new();
         audio.enabled = false;
         let (mut n, mut air, mut two, mut tip, mut flips, mut last) = (0, 0, 0, 0, 0usize, 0i32);
         let (mut roll_max, mut dist, mut speed_sum) = (0.0f32, 0.0f32, 0.0f32);
         let mut off = 0usize;
+        let mut tumble = 0usize;
         let steps = ((COUNTDOWN + seconds) / DT) as usize;
         for _ in 0..steps {
             let before = race.player.pos;
@@ -1680,6 +1735,7 @@ pub(crate) mod drive_qa {
             let roll = p.roll_deg().abs();
             roll_max = roll_max.max(roll);
             tip += (roll > 25.0) as usize;
+            tumble += (roll > 60.0 || p.pitch_deg().abs() > 60.0) as usize;
             let s = if p.vel.y > 1.0 {
                 1
             } else if p.vel.y < -1.0 {
@@ -1708,6 +1764,7 @@ pub(crate) mod drive_qa {
             distance_m: dist,
             mean_kmh: speed_sum / n,
             off_line: off as f32 / n,
+            tumbling: tumble as f32 / n,
         }
     }
 
@@ -2332,6 +2389,28 @@ pub(crate) mod drive_qa {
         println!("{id} rescues={rescues}");
     }
 
+    /// A touch player holds the gas through every jump; without the landing
+    /// assist that pitched the truck onto its tail (DEVIL: 2.9 % of the time
+    /// past 60 deg, 26 % off the line). With it the thumb drives as cleanly
+    /// as the autopilot.
+    #[test]
+    fn touch_player_with_landing_assist_does_not_tumble() {
+        require_assets!();
+        for id in ["ASPEN", "DEVIL", "CZ2000"] {
+            let m = drive_with(id, 60.0, true, true);
+            assert!(
+                m.tumbling < 0.002,
+                "{id}: tumbling {:.1}%",
+                m.tumbling * 100.0
+            );
+            assert!(
+                m.off_line < 0.05,
+                "{id}: off the line {:.0}%",
+                m.off_line * 100.0
+            );
+        }
+    }
+
     /// `cargo test --release -p evox drive_report -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -2339,7 +2418,7 @@ pub(crate) mod drive_qa {
         for id in ["ASPEN", "ZONA", "DEVIL", "CZ2000", "THEHILL", "MCROSS"] {
             let m = drive(id, 60.0);
             println!(
-                "{id:8} dist={:5.0}m mean={:3.0}km/h off_line={:4.1}% airborne={:4.1}% <=2wheels={:4.1}% roll_max={:3.0} roll>25={:4.1}% vy_reversals={}",
+                "{id:8} dist={:5.0}m mean={:3.0}km/h off_line={:4.1}% airborne={:4.1}% <=2wheels={:4.1}% roll_max={:3.0} roll>25={:4.1}% tumbling={:4.1}% vy_reversals={}",
                 m.distance_m,
                 m.mean_kmh,
                 m.off_line * 100.0,
@@ -2347,6 +2426,7 @@ pub(crate) mod drive_qa {
                 m.two_or_less * 100.0,
                 m.roll_max,
                 m.roll_over_25 * 100.0,
+                m.tumbling * 100.0,
                 m.vy_reversals
             );
         }

@@ -56,6 +56,15 @@ nose up) and steering yaws it at `AIR_YAW_ACCEL` (1.2 rad/s²). AI drivers and
 the QA autopilot use it to hold the slope they are about to land on
 (`race::air_level`).
 
+Landing assist (`Race::air_assist`, on with touch controls): the human player
+gets the same `air_level` hold. A touch player keeps the gas button pressed
+through every jump, and without the assist that pitched the truck onto its
+tail. Measured with a thumb-style pilot (`EVOX_PILOT_THUMB=1`, steering
+all-or-nothing, gas held) over 60 s: DEVIL tumbled (> 60°) 2.9 % of the time
+and left the line 26 %; ASPEN 2.1 %, CZ2000 2.2 %. With the assist
+(`EVOX_AIR_ASSIST=1`) all three drop to 0 % and stay on the line. Keyboard
+play keeps the manual air control.
+
 ## Tire model
 
 Single Pacejka curve, shared by the lateral and longitudinal axes:
