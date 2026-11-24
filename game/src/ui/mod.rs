@@ -10,6 +10,7 @@ use macroquad::prelude::*;
 use crate::assets::Assets;
 
 pub mod screens;
+pub mod touch_menu;
 
 #[derive(Default)]
 pub struct Focus {
@@ -141,6 +142,190 @@ const GLYPHS: [(u16, u16, u16); 92] = [
     (145, 80, 6),
     (157, 80, 2),
 ];
+
+/// Height, in UI units, that menus are authored for. On a phone the screen is
+/// far denser than the 640x480-class menus the retail art and text sizes were
+/// made for, so menu screens are drawn through a camera that shows this many
+/// units of height; everything (layout, text, hit tests) then scales together.
+const UI_REF_H: f32 = 700.0;
+
+/// UI scale factor: real pixels per UI unit. 1.0 on desktop; on Android the
+/// screen height divided by `UI_REF_H`. `EVOX_UI_REF=<height>` forces a
+/// reference height on any platform (desktop checks of the phone layout).
+pub fn k() -> f32 {
+    let r = std::env::var("EVOX_UI_REF")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .or(if cfg!(target_os = "android") {
+            Some(UI_REF_H)
+        } else {
+            None
+        });
+    r.map_or(1.0, |r| (screen_height() / r.max(100.0)).max(1.0))
+}
+
+/// Screen width in UI units.
+pub fn vw() -> f32 {
+    screen_width() / k()
+}
+
+/// Screen height in UI units.
+pub fn vh() -> f32 {
+    screen_height() / k()
+}
+
+/// Pointer position in UI units.
+pub fn mouse() -> Vec2 {
+    Vec2::from(mouse_position()) / k()
+}
+
+/// Draw the following UI through the scaled camera (no-op at scale 1).
+pub fn begin_scaled() {
+    if k() > 1.0 {
+        // `from_display_rect` is built for render targets (y up); the screen
+        // here is y down like every other UI coordinate, so flip it back.
+        let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, vw(), vh()));
+        cam.zoom.y = -cam.zoom.y;
+        set_camera(&cam);
+    }
+}
+
+/// After a menu screen drew into an off-screen target (3D truck preview), put
+/// the UI camera back: plain default camera at scale 1, the scaled one on phones.
+pub fn restore_menu_camera() {
+    if k() > 1.0 {
+        begin_scaled();
+    } else {
+        set_default_camera();
+    }
+}
+
+/// Back to real pixels.
+pub fn end_scaled() {
+    set_default_camera();
+}
+
+// ---------------------------------------------------------------- touch --
+
+/// Finger-friendly menus: big targets, tap-on-release, swipe-to-scroll.
+/// Always on for Android; `EVOX_TOUCH_UI=1` turns it on elsewhere.
+pub fn touch_ui() -> bool {
+    cfg!(target_os = "android") || std::env::var("EVOX_TOUCH_UI").is_ok_and(|v| v == "1")
+}
+
+/// Pointer travel (UI units) beyond which a press is a drag, not a tap.
+const TAP_SLOP: f32 = 14.0;
+
+#[derive(Default)]
+struct Pointer {
+    down: bool,
+    start: Vec2,
+    last: Vec2,
+    travelled: f32,
+    /// This frame's vertical movement while a press is held.
+    dy: f32,
+    /// `(start, end, travelled)` on the frame the press ended.
+    released: Option<(Vec2, Vec2, f32)>,
+    /// Row accumulator for `swipe_rows`.
+    acc: f32,
+}
+
+static POINTER: std::sync::Mutex<Pointer> = std::sync::Mutex::new(Pointer {
+    down: false,
+    start: Vec2::ZERO,
+    last: Vec2::ZERO,
+    travelled: 0.0,
+    dy: 0.0,
+    released: None,
+    acc: 0.0,
+});
+
+/// Advance the pointer state; call once per frame before any UI is built.
+pub fn tick() {
+    let pos = mouse();
+    let mut p = POINTER.lock().unwrap();
+    p.released = None;
+    p.dy = 0.0;
+    if is_mouse_button_pressed(MouseButton::Left) {
+        p.down = true;
+        p.start = pos;
+        p.last = pos;
+        p.travelled = 0.0;
+        p.acc = 0.0;
+    } else if p.down && is_mouse_button_down(MouseButton::Left) {
+        p.dy = pos.y - p.last.y;
+        p.travelled = p.travelled.max((pos - p.start).length());
+        p.last = pos;
+    }
+    if p.down && is_mouse_button_released(MouseButton::Left) {
+        p.down = false;
+        p.released = Some((p.start, pos, p.travelled));
+    }
+}
+
+/// A click/tap on `r` this frame. Touch UI confirms on release (press and
+/// release both inside `r`, barely moved) so a swipe never activates a row;
+/// with a mouse it fires on press while hovering, as before.
+pub fn tap(r: Rect) -> bool {
+    if touch_ui() {
+        let p = POINTER.lock().unwrap();
+        p.released
+            .is_some_and(|(s, e, t)| t < TAP_SLOP && r.contains(s) && r.contains(e))
+    } else {
+        r.contains(mouse()) && is_mouse_button_pressed(MouseButton::Left)
+    }
+}
+
+/// Where the last tap ended (the pointer position when nothing was released).
+pub fn mouse_for_tap() -> Vec2 {
+    POINTER
+        .lock()
+        .unwrap()
+        .released
+        .map_or_else(mouse, |(_, e, _)| e)
+}
+
+/// True while a press has travelled far enough to be a swipe.
+pub fn is_dragging() -> bool {
+    let p = POINTER.lock().unwrap();
+    p.down && p.travelled >= TAP_SLOP
+}
+
+static BACK_REQUEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask `App::back` to step out of the current screen (the on-screen "Main
+/// Menu" label is the touch equivalent of Esc).
+pub fn request_back() {
+    BACK_REQUEST.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Consume a pending back request.
+pub fn take_back() -> bool {
+    BACK_REQUEST.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Is a finger held on `r` right now (for pressed-state highlights)?
+pub fn held(r: Rect) -> bool {
+    let p = POINTER.lock().unwrap();
+    p.down && r.contains(p.start) && r.contains(p.last)
+}
+
+/// Whole rows dragged this frame by a press that began inside `r`: positive
+/// when the content should move down the list (finger dragged up).
+pub fn swipe_rows(r: Rect, row_h: f32) -> i32 {
+    let mut p = POINTER.lock().unwrap();
+    if !(p.down && r.contains(p.start)) {
+        return 0;
+    }
+    if p.travelled < TAP_SLOP {
+        return 0;
+    }
+    let dy = p.dy;
+    p.acc -= dy;
+    let steps = (p.acc / row_h.max(1.0)).trunc();
+    p.acc -= steps * row_h;
+    steps as i32
+}
 
 pub struct Ui {
     pub scale: f32,
@@ -298,7 +483,7 @@ impl Ui {
         focused: bool,
         enabled: bool,
     ) -> bool {
-        let hover = r.contains(mouse_position().into());
+        let hover = r.contains(mouse());
         // One plate, state shown by tint (the original menu buttons).
         let frame = "BUTTON3";
         let tint = if !enabled {
@@ -317,9 +502,7 @@ impl Ui {
             Color::new(0.92, 0.92, 0.95, 1.0)
         };
         self.centered(r.x + r.w * 0.5, r.y + r.h * 0.5 - 17.0, 24.0, label, color);
-        enabled
-            && (focused && is_key_pressed(KeyCode::Enter)
-                || (hover && is_mouse_button_pressed(MouseButton::Left)))
+        enabled && (focused && is_key_pressed(KeyCode::Enter) || tap(r))
     }
 
     /// Small row item for lists (garage parts, lobbies, tracks).
@@ -386,10 +569,7 @@ impl Ui {
                 Color::new(0.72, 0.76, 0.84, dim.a),
             );
         }
-        let hover = r.contains(mouse_position().into());
-        enabled
-            && (focused && is_key_pressed(KeyCode::Enter)
-                || (hover && is_mouse_button_pressed(MouseButton::Left)))
+        enabled && (focused && is_key_pressed(KeyCode::Enter) || tap(r))
     }
 
     pub fn tab(
@@ -431,8 +611,7 @@ impl Ui {
             );
         }
         self.centered(r.x + r.w * 0.5, r.y + r.h - 8.0, 13.0, label, tint);
-        let hover = r.contains(mouse_position().into());
-        hover && is_mouse_button_pressed(MouseButton::Left)
+        tap(r)
     }
 
     pub fn stat_bar(
@@ -463,21 +642,21 @@ impl Ui {
     }
 
     pub fn text_click(&self, r: Rect) -> bool {
-        r.contains(mouse_position().into()) && is_mouse_button_pressed(MouseButton::Left)
+        tap(r)
     }
 
     pub fn hint(&self, text: &str) {
         let s = format!("Enter Select   Esc Back   Arrows Move   {text}");
         draw_rectangle(
             0.0,
-            screen_height() - 30.0,
-            screen_width(),
+            vh() - 30.0,
+            vw(),
             30.0,
             Color::new(0.0, 0.0, 0.0, 0.55),
         );
         self.text(
             14.0,
-            screen_height() - 26.0,
+            vh() - 26.0,
             15.0,
             &s,
             Color::new(0.75, 0.78, 0.85, 1.0),

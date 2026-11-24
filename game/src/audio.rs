@@ -546,6 +546,19 @@ pub struct Audio {
 }
 
 impl Audio {
+    /// Apply the user's volume settings. Phone speakers are much quieter than
+    /// desktop monitors and the mix is already peak-limited at the defaults, so
+    /// Android lifts master by 25% and music by 40% (both capped at full scale).
+    pub fn set_levels(&mut self, master: f32, music: f32) {
+        let (m, mu) = if cfg!(target_os = "android") {
+            (master * 1.25, music * 1.4)
+        } else {
+            (master, music)
+        };
+        self.master = m.clamp(0.0, 1.0);
+        self.music_volume = mu.clamp(0.0, 1.0);
+    }
+
     pub fn new() -> Self {
         let (music_tx, music_rx) = channel();
         Self {
@@ -650,6 +663,9 @@ impl Audio {
         // not crash the game: log it once and continue silent.
         if !std::path::Path::new(path).exists() {
             eprintln!("audio: music file {path} not found — continuing without background music");
+            // Remember the miss so the per-frame request does not log (and
+            // stat the disk) again.
+            self.music.insert(name.to_string(), None);
             return;
         }
         self.pending_music.push(name.to_string());

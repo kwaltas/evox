@@ -137,8 +137,11 @@ pub struct ArtStats {
     pub failed: usize,
 }
 
-/// Bake `texture/vehicle/ART/*.TIF` (and the legacy `unknown/vehicle/ART`)
-/// into the `RAW/ACT/OPA` triplet the loader reads. UI TIFFs are excluded: they
+/// Bake the vehicle TIFFs (`texture/vehicle/ART`, legacy `unknown/vehicle/ART`)
+/// and the level/scenery TIFFs (`texture/unknown/ART`, legacy
+/// `unknown/unknown/ART`: terrain skins, rocks, cliffs, pipes, ...) into the
+/// `RAW/ACT/OPA` triplet the loader reads. Without the scenery set the props
+/// and some terrains render untextured white. UI TIFFs are excluded: they
 /// belong to the interface, not the terrain/vehicle texture library.
 pub fn convert_art(root: &Path, mut progress: impl FnMut(usize, usize)) -> ArtStats {
     let tex = root.join("texture/texture/ART");
@@ -148,6 +151,8 @@ pub fn convert_art(root: &Path, mut progress: impl FnMut(usize, usize)) -> ArtSt
     for dir in [
         root.join("texture/vehicle/ART"),
         root.join("unknown/vehicle/ART"),
+        root.join("texture/unknown/ART"),
+        root.join("unknown/unknown/ART"),
     ] {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {

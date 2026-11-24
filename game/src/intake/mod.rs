@@ -2,7 +2,10 @@
 //! complete retail tree is present, and otherwise ask for the user's 4x4
 //! Evolution 2 ISO or mounted disc and extract it natively.
 
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod extract;
+pub mod installshield;
 pub mod iso;
 pub mod loader;
 pub mod pod;
@@ -12,6 +15,7 @@ pub mod verify;
 
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_os = "android"))]
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 
 #[derive(Clone, Debug)]
@@ -36,6 +40,18 @@ pub fn data_root() -> PathBuf {
             return PathBuf::from(p);
         }
     }
+    platform_root()
+}
+
+/// Android: the app-private files directory (no permission needed, removed with
+/// the app). The package name is fixed by `android/build.sh`.
+#[cfg(target_os = "android")]
+fn platform_root() -> PathBuf {
+    PathBuf::from("/data/data/com.evox.game/files/evox")
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_root() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());
@@ -96,6 +112,7 @@ pub fn resolve_root(override_dir: Option<&Path>) -> (PathBuf, bool) {
     (root, ready)
 }
 
+#[cfg(not(target_os = "android"))]
 fn pick_source() -> Result<Source, String> {
     // QA/automation hook: skip the modal picker when the caller already knows
     // which ISO or folder to intake.
@@ -130,6 +147,7 @@ fn pick_source() -> Result<Source, String> {
     Err("no 4x4 Evolution 2 data selected".into())
 }
 
+#[cfg(not(target_os = "android"))]
 fn error_dialog(message: &str) {
     let _ = MessageDialog::new()
         .set_level(MessageLevel::Error)
@@ -144,6 +162,10 @@ fn error_dialog(message: &str) {
 pub enum Boot {
     Ready(PathBuf),
     Intake(Job),
+    /// Android: no data yet. The window must be up before the user can pick
+    /// the ISO, so the choice happens in `android::acquire`.
+    #[cfg(target_os = "android")]
+    NeedSource(PathBuf),
 }
 
 pub struct Job {
@@ -158,7 +180,16 @@ pub fn begin(override_dir: Option<&Path>) -> Result<Boot, String> {
     if ready {
         return Ok(Boot::Ready(root));
     }
+    #[cfg(target_os = "android")]
+    {
+        return Ok(Boot::NeedSource(root));
+    }
+    #[cfg(not(target_os = "android"))]
+    begin_desktop(root)
+}
 
+#[cfg(not(target_os = "android"))]
+fn begin_desktop(root: PathBuf) -> Result<Boot, String> {
     let source = match pick_source() {
         Ok(s) => s,
         Err(e) => {

@@ -222,7 +222,7 @@ pub fn intro_draw(t: Option<&Texture2D>, fade: f32) {
 /// prompt. Falls back to the extracted `LOGO480` card.
 pub fn title(ui: &Ui, fallback: Option<&Texture2D>) {
     clear_background(BLACK);
-    let (sw, sh) = (screen_width(), screen_height());
+    let (sw, sh) = (crate::ui::vw(), crate::ui::vh());
     if let Some(l) = ui2("logo") {
         let w = (sw * 0.54).min(sh * 0.84);
         let h = w * l.height() / l.width();
@@ -287,7 +287,7 @@ pub fn menu_bg(name: &str, sw: f32, sh: f32) {
 /// The original's blue bars: screen name top left, parent screen top right,
 /// profile and BACK at the bottom, date and time bottom right.
 pub fn menu_frame(ui: &Ui, left: &str, right: &str, profile: &str, bg: &str) {
-    let (sw, sh) = (screen_width(), screen_height());
+    let (sw, sh) = (crate::ui::vw(), crate::ui::vh());
     clear_background(BLACK);
     menu_bg(bg, sw, sh);
     draw_rectangle(0.0, 0.0, sw, sh * 0.105, BAR);
@@ -301,6 +301,9 @@ pub fn menu_frame(ui: &Ui, left: &str, right: &str, profile: &str, bg: &str) {
         34.0,
         MENU_SEL,
     );
+    if crate::ui::touch_ui() && crate::ui::tap(Rect::new(sw * 0.5, 0.0, sw * 0.5, sh * 0.105)) {
+        crate::ui::request_back();
+    }
     text(ui, "Profile", sw * 0.045, sh * 0.905, 20.0, MENU_HEAD);
     text_o(ui, profile, sw * 0.045, sh * 0.945, 26.0, WHITE);
     let bx = sw * 0.045 + width(ui, profile, 26.0) + 24.0;
@@ -373,7 +376,17 @@ pub fn wrap_text(t: &str, max_chars: usize) -> Vec<String> {
 
 /// Row rectangle of menu item `i` (for mouse hit-testing).
 pub fn menu_row_rect(i: usize) -> Rect {
-    let (sw, sh) = (screen_width(), screen_height());
+    let (sw, sh) = (crate::ui::vw(), crate::ui::vh());
+    if crate::ui::touch_ui() {
+        // Two columns of four fat buttons (about 9 mm tall on a phone).
+        let (col, row) = ((i / 4) as f32, (i % 4) as f32);
+        return Rect::new(
+            sw * 0.03 + col * sw * 0.32,
+            sh * 0.14 + row * sh * 0.16,
+            sw * 0.30,
+            sh * 0.13,
+        );
+    }
     let y = sh * 0.165 + i as f32 * sh * 0.058;
     Rect::new(sw * 0.030, y - 24.0, sw * 0.30, 33.0)
 }
@@ -382,7 +395,7 @@ pub fn menu_row_rect(i: usize) -> Rect {
 /// cursor, the logo top right, the description of the selected item lower
 /// right.
 pub fn menu_list(ui: &Ui, items: &[&str], sel: usize, desc: &str, profile: &str) {
-    let (sw, sh) = (screen_width(), screen_height());
+    let (sw, sh) = (crate::ui::vw(), crate::ui::vh());
     menu_frame(ui, "Select Mode", "Main Menu", profile, "bg_main");
     if let Some(l) = ui2("logo") {
         let w = sw * 0.20;
@@ -398,10 +411,15 @@ pub fn menu_list(ui: &Ui, items: &[&str], sel: usize, desc: &str, profile: &str)
             },
         );
     }
+    let touch = crate::ui::touch_ui();
     for (i, label) in items.iter().enumerate() {
         let r = menu_row_rect(i);
-        let y = r.y + 24.0;
-        let is_sel = sel == i;
+        let y = if touch {
+            r.y + r.h * 0.5 + 15.0
+        } else {
+            r.y + 24.0
+        };
+        let is_sel = sel == i && !touch || (touch && crate::ui::held(r));
         if let Some(b) = ui2("button3") {
             draw_texture_ex(
                 &b,
@@ -418,7 +436,7 @@ pub fn menu_list(ui: &Ui, items: &[&str], sel: usize, desc: &str, profile: &str)
                 },
             );
         }
-        if is_sel {
+        if is_sel && !touch {
             if let Some(c) = ui2("cursor") {
                 let h = 26.0;
                 let w = h * c.width() / c.height();
@@ -437,11 +455,15 @@ pub fn menu_list(ui: &Ui, items: &[&str], sel: usize, desc: &str, profile: &str)
         text_o(
             ui,
             label,
-            sw * 0.045,
+            if touch { r.x + r.w * 0.08 } else { sw * 0.045 },
             y,
-            32.0,
+            if touch { 40.0 } else { 32.0 },
             if is_sel { MENU_SEL } else { WHITE },
         );
+    }
+    if touch {
+        // No hover on a phone: the description and key hints have no use.
+        return;
     }
     let lines = wrap_text(desc, 52);
     draw_rectangle(

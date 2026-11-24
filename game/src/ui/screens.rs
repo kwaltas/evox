@@ -8,10 +8,10 @@ use crate::terrain::GRID;
 use crate::ui::Focus;
 
 fn vw() -> f32 {
-    screen_width()
+    crate::ui::vw()
 }
 fn vh() -> f32 {
-    screen_height()
+    crate::ui::vh()
 }
 
 fn bg(app: &App, name: &str) {
@@ -105,6 +105,9 @@ fn header(app: &mut App, title: &str) {
         26.0,
         crate::classic::MENU_SEL,
     );
+    if crate::ui::touch_ui() && crate::ui::tap(Rect::new(vw() * 0.5, 0.0, vw() * 0.5, h)) {
+        crate::ui::request_back();
+    }
 }
 
 /// Background photo of an original screen (`assets/ui2/<name>.png`), dimmed
@@ -127,7 +130,7 @@ fn menu_column(app: &mut App, items: &[&str]) -> Option<usize> {
     let mut picked = None;
     for (i, label) in items.iter().enumerate() {
         let r = Rect::new(x, y0 + i as f32 * (h + 10.0), w, h);
-        if r.contains(mouse_position().into()) && app.focus.index != i {
+        if r.contains(crate::ui::mouse()) && app.focus.index != i {
             app.focus.index = i;
         }
         if app
@@ -395,10 +398,16 @@ fn main_menu_classic(app: &mut App) {
     ];
     nav_keys(app, items.len());
     app.focus.clamp(items.len());
-    let mouse: Vec2 = mouse_position().into();
+    let mouse: Vec2 = crate::ui::mouse();
     let mut picked = None;
     for i in 0..items.len() {
-        if crate::classic::menu_row_rect(i).contains(mouse) {
+        let r = crate::classic::menu_row_rect(i);
+        if crate::ui::touch_ui() {
+            if crate::ui::tap(r) {
+                app.focus.index = i;
+                picked = Some(i);
+            }
+        } else if r.contains(mouse) {
             if app.focus.index != i {
                 app.focus.index = i;
             }
@@ -449,7 +458,7 @@ fn main_menu_classic(app: &mut App) {
 /// Display spelling for a shipped level id. The ids are upper-case file
 /// stems; the `.LVL`/`SERIES` data carries no long name, so the handful of
 /// run-together ones are expanded here and everything else is title-cased.
-fn track_label(app: &App, id: &str) -> String {
+pub(super) fn track_label(app: &App, id: &str) -> String {
     let name = app
         .track_names
         .get(id)
@@ -506,6 +515,9 @@ fn track_title(id: &str) -> String {
 /// background, full-width button strips for the level list, cursor down the
 /// left of the highlight, and the vehicle/session panel on the right.
 pub fn quick_race(app: &mut App) {
+    if crate::ui::touch_ui() {
+        return super::touch_menu::quick_race(app);
+    }
     use crate::classic::{menu_frame, text, text_o, width, MENU_HEAD, MENU_SEL};
 
     let (sw, sh) = (vw(), vh());
@@ -749,7 +761,7 @@ pub fn quick_race(app: &mut App) {
         );
 
         let hit = app.ui.text_click(r);
-        if r.contains(mouse_position().into()) {
+        if r.contains(crate::ui::mouse()) {
             app.focus.index = n;
             app.setup.focus = 0;
         }
@@ -839,7 +851,7 @@ pub fn quick_race(app: &mut App) {
             );
             app.render
                 .draw_truck_preview(&mut app.assets, cur, Vec3::ZERO, spin, eye);
-            set_default_camera();
+            crate::ui::restore_menu_camera();
             draw_texture_ex(
                 &rt.texture,
                 veh_card.x,
@@ -1085,11 +1097,21 @@ pub fn career(app: &mut App) {
     let mut start = false;
     // Scroll so the selection stays inside the list area above the
     // earnings line (11 series do not fit a 720 px screen).
-    let row_h = 62.0;
+    let row_h = if crate::ui::touch_ui() { 78.0 } else { 62.0 };
     let visible = (((vh() - 100.0 - 84.0) / row_h) as usize).max(1);
+    if crate::ui::touch_ui() && !list.is_empty() {
+        let area = Rect::new(28.0, 100.0, vw() - 56.0, visible as f32 * row_h);
+        let d = crate::ui::swipe_rows(area, row_h);
+        app.focus.index = (app.focus.index as i32 + d).clamp(0, list.len() as i32 - 1) as usize;
+    }
     let first = app.focus.index.saturating_sub(visible - 1);
     for (i, s) in list.iter().enumerate().skip(first).take(visible) {
-        let r = Rect::new(28.0, 100.0 + (i - first) as f32 * row_h, vw() - 56.0, 56.0);
+        let r = Rect::new(
+            28.0,
+            100.0 + (i - first) as f32 * row_h,
+            vw() - 56.0,
+            row_h - 6.0,
+        );
         let locked = !app.career.is_unlocked(s.tier);
         let sub = format!(
             "Tier {}  |  {} events  |  fee ${}  purse ${}  |  max class {}",
@@ -1143,6 +1165,9 @@ pub fn career(app: &mut App) {
 }
 
 pub fn garage(app: &mut App) {
+    if crate::ui::touch_ui() {
+        return super::touch_menu::garage(app);
+    }
     crate::classic::menu_frame(
         &app.ui,
         "Garage & Dealership",
@@ -1218,7 +1243,7 @@ pub fn garage(app: &mut App) {
             painted.paint_index = app.setup.paint % painted.paints.len().max(1);
             app.render
                 .draw_truck_preview(&mut app.assets, &painted, Vec3::ZERO, spin, eye);
-            set_default_camera();
+            crate::ui::restore_menu_camera();
             draw_texture_ex(
                 &rt.texture,
                 px,
@@ -1341,8 +1366,15 @@ pub fn shop(app: &mut App) {
     shop.cursor = shop.cursor.min(items.len());
     let action_focus = shop.cursor >= items.len();
     let list_y = 162.0;
-    let row_h = 58.0;
+    let touch = crate::ui::touch_ui();
+    let row_h = if touch { 76.0 } else { 58.0 };
     let rows = ((vh() - list_y - 96.0) / row_h) as usize;
+    if touch && !items.is_empty() {
+        // Swipe the list: each row of drag moves the selection one item.
+        let area = Rect::new(28.0, list_y, vw() * 0.52, rows as f32 * row_h);
+        let d = crate::ui::swipe_rows(area, row_h);
+        shop.cursor = (shop.cursor as i32 + d).clamp(0, items.len() as i32 - 1) as usize;
+    }
     let offset = (shop.cursor / rows.max(1)) * rows.max(1);
     for (n, p) in items.iter().enumerate().skip(offset).take(rows) {
         let r = Rect::new(
@@ -1482,7 +1514,11 @@ pub fn shop(app: &mut App) {
         };
         if app.ui.button(
             &app.assets,
-            Rect::new(px + 20.0, vh() - 92.0, pw - 40.0, 46.0),
+            if touch {
+                Rect::new(px + 20.0, vh() - 116.0, pw - 40.0, 72.0)
+            } else {
+                Rect::new(px + 20.0, vh() - 92.0, pw - 40.0, 46.0)
+            },
             action,
             action_focus,
             equipped || shop.owned.contains(&p.code) || shop.buy_lock(p).is_none(),
@@ -1565,32 +1601,68 @@ pub fn settings(app: &mut App) {
             },
         ),
     ];
-    for (label, value) in rows {
-        app.ui.text(40.0, y, 20.0, label, WHITE);
-        app.ui
-            .text(420.0, y, 20.0, &value, Color::new(1.0, 0.9, 0.55, 1.0));
-        y += 42.0;
-    }
-    if is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::Right) {
-        let d = if is_key_pressed(KeyCode::Right) {
-            1.0
+    let touch = crate::ui::touch_ui();
+    let mut tapped: Option<(usize, f32)> = None;
+    for (i, (label, value)) in rows.into_iter().enumerate() {
+        if touch {
+            // A fat row: tap the left half to lower, the right half to raise.
+            let r = Rect::new(40.0, y - 30.0, vw() - 80.0, 74.0);
+            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.04, 0.05, 0.09, 0.78));
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, Color::new(0.5, 0.58, 0.78, 0.7));
+            app.ui.text(r.x + 24.0, y - 6.0, 26.0, label, WHITE);
+            let vx = r.x + r.w * 0.66;
+            app.ui
+                .text(vx, y - 6.0, 26.0, &value, Color::new(1.0, 0.9, 0.55, 1.0));
+            let mid = r.y + r.h * 0.5;
+            for (cx, dir) in [(r.x + r.w * 0.56, -1.0f32), (r.x + r.w * 0.94, 1.0)] {
+                draw_triangle(
+                    vec2(cx + dir * 14.0, mid),
+                    vec2(cx - dir * 14.0, mid - 16.0),
+                    vec2(cx - dir * 14.0, mid + 16.0),
+                    Color::new(0.95, 0.72, 0.25, 1.0),
+                );
+            }
+            if crate::ui::tap(r) {
+                let dir = if crate::ui::mouse_for_tap().x < r.x + r.w * 0.75 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                tapped = Some((i, dir));
+            }
+            y += 84.0;
         } else {
-            -1.0
-        };
-        match app.focus.index % 5 {
+            app.ui.text(40.0, y, 20.0, label, WHITE);
+            app.ui
+                .text(420.0, y, 20.0, &value, Color::new(1.0, 0.9, 0.55, 1.0));
+            y += 42.0;
+        }
+    }
+    let key_dir = if is_key_pressed(KeyCode::Right) {
+        Some((app.focus.index % 5, 1.0))
+    } else if is_key_pressed(KeyCode::Left) {
+        Some((app.focus.index % 5, -1.0))
+    } else {
+        None
+    };
+    if let Some((i, d)) = tapped.or(key_dir) {
+        match i {
             0 => s.master_volume = (s.master_volume + d * 0.05).clamp(0.0, 1.0),
             1 => s.music_volume = (s.music_volume + d * 0.05).clamp(0.0, 1.0),
             2 => s.camera_fov = (s.camera_fov + d * 5.0).clamp(55.0, 100.0),
             3 => s.metric = !s.metric,
             _ => s.invert_y = !s.invert_y,
         }
-        app.audio.master = s.master_volume;
-        app.audio.music_volume = s.music_volume;
+        app.audio.set_levels(s.master_volume, s.music_volume);
     }
     nav_keys(app, 5);
     if app.ui.button(
         &app.assets,
-        Rect::new(40.0, y + 20.0, 240.0, 48.0),
+        if touch {
+            Rect::new(40.0, y - 6.0, vw() - 80.0, 76.0)
+        } else {
+            Rect::new(40.0, y + 20.0, 240.0, 48.0)
+        },
         "SAVE & BACK",
         true,
         true,
@@ -1779,14 +1851,7 @@ pub fn race(app: &mut App) {
             ("CURRENT", crate::classic::fmt_time(cur)),
             ("PREVIOUS", last),
             ("FASTEST", best),
-            (
-                "LAP",
-                format!(
-                    "{}/{}",
-                    race.lap.min(crate::race::MAX_LAPS),
-                    crate::race::MAX_LAPS
-                ),
-            ),
+            ("LAP", format!("{}/{}", race.lap.min(race.laps), race.laps)),
             (
                 "PLACE",
                 format!("{}/{}", race.position, race.opponents.len() + 1),
@@ -2210,7 +2275,11 @@ pub fn results(app: &mut App) {
     }
     if app.ui.button(
         &app.assets,
-        Rect::new(vw() * 0.5 - 190.0, vh() - 120.0, 380.0, 50.0),
+        if crate::ui::touch_ui() {
+            Rect::new(vw() * 0.5 - 280.0, vh() - 150.0, 560.0, 84.0)
+        } else {
+            Rect::new(vw() * 0.5 - 190.0, vh() - 120.0, 380.0, 50.0)
+        },
         &label,
         true,
         true,
@@ -2237,8 +2306,15 @@ pub fn credits(app: &mut App) {
         "No copyrighted assets are shipped. Point the setup",
         "wizard at your own CD image; assets are rebuilt locally.",
         "",
-        "Press Esc",
+        if crate::ui::touch_ui() {
+            "Tap anywhere to go back"
+        } else {
+            "Press Esc"
+        },
     ];
+    if crate::ui::touch_ui() && crate::ui::tap(Rect::new(0.0, 0.0, vw(), vh())) {
+        crate::ui::request_back();
+    }
     for (i, l) in lines.iter().enumerate() {
         app.ui.text(
             40.0,

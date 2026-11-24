@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Clean-room source port of 4x4 Evolution 1/2"
 
+[lib]
+name = "evox_game"
+path = "src/lib.rs"
+
 [[bin]]
 name = "evox"
 path = "src/main.rs"
@@ -19,9 +23,14 @@ iso9660 = "0.1.1"
 macroquad = { version = "0.4", features = ["audio"] }
 md-5 = "0.11.0"
 png = "0.18.1"
-rfd = "0.18.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tiff = "0.11.3"
 zip = "9.6.1"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rfd = "0.18.0"
+
+[target.'cfg(target_os = "android")'.dependencies]
+libc = "0.2"

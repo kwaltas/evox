@@ -22,6 +22,11 @@ pub struct IsoPod {
 }
 
 impl IsoPod {
+    /// Streaming reader positioned at the start of the file.
+    pub fn reader(&self) -> impl std::io::Read + std::io::Seek {
+        self.file.read()
+    }
+
     pub fn read(&self) -> Result<Vec<u8>, String> {
         let mut out = Vec::with_capacity(self.size as usize);
         self.file
@@ -65,7 +70,9 @@ fn walk(
                 walk(&d, &next, depth + 1, out)?;
             }
             DirectoryEntry::File(f) => {
-                if f.identifier.to_ascii_lowercase().ends_with(".pod") {
+                let id = f.identifier.to_ascii_lowercase();
+                let id = id.split(';').next().unwrap_or(&id);
+                if id.ends_with(".pod") || id == "data1.hdr" || id == "data1.cab" {
                     let name = if prefix.is_empty() {
                         f.identifier.clone()
                     } else {
@@ -83,10 +90,28 @@ fn walk(
     Ok(())
 }
 
-/// Every `.POD` in the image, sorted by name. The file handle is retained so
-/// the caller can stream one archive at a time instead of loading the disc.
+/// Open the disc image. A path of the form `fd:<n>` is an already-open file
+/// descriptor (Android's document picker hands over one; reopening it through
+/// `/proc/self/fd` is refused by SELinux), which is duplicated, never closed.
+fn open_image(path: &Path) -> std::io::Result<File> {
+    #[cfg(unix)]
+    if let Some(n) = path.to_str().and_then(|p| p.strip_prefix("fd:")) {
+        use std::os::fd::{BorrowedFd, RawFd};
+        let fd: RawFd = n
+            .parse()
+            .map_err(|_| std::io::Error::other("bad file descriptor number"))?;
+        // SAFETY: the caller keeps `fd` open for the life of the process.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        return Ok(File::from(borrowed.try_clone_to_owned()?));
+    }
+    File::open(path)
+}
+
+/// Every `.POD` in the image, plus the InstallShield `data1.hdr`/`data1.cab`
+/// pair when present, sorted by name. The file handle is retained so the
+/// caller can stream one archive at a time instead of loading the disc.
 pub fn list_pods(path: &Path) -> Result<Vec<IsoPod>, String> {
-    let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file = open_image(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let iso = ISO9660::new(file).map_err(|e| {
         format!(
             "{}: not a readable ISO 9660 image ({e}); mount it and choose the disc folder instead",

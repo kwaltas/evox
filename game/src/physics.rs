@@ -196,6 +196,8 @@ pub struct Vehicle {
     pub impact: f32,
     /// Last total drive force at the contact patches (N), for telemetry.
     pub drive_force: f32,
+    /// Per-axle stiffening so the loaded truck rests at about 75% of its stroke (see `static_spring_boost`).
+    spring_boost: [f32; 2],
 }
 
 impl Deref for Vehicle {
@@ -231,7 +233,7 @@ impl Vehicle {
                 wheels[wheel_index(axle, side)].mount = Vec3::new(m.x, m.y, -m.z) * FT;
             }
         }
-        Self {
+        let mut v = Self {
             config: Config {
                 // Centre of mass kept low (the retail chassis sits the engine
                 // and axles near the ground); a high CG is what tips the truck
@@ -258,7 +260,10 @@ impl Vehicle {
             impact: 0.0,
             low_range: false,
             drive_force: 0.0,
-        }
+            spring_boost: [1.0; 2],
+        };
+        v.spring_boost = v.static_spring_boost();
+        v
     }
 
     pub fn mass(&self) -> f32 {
@@ -380,10 +385,46 @@ impl Vehicle {
         self.mass() * 0.25
     }
 
+    /// Stiffening factor per axle so the loaded truck rests at about 75% of its stroke.
+    ///
+    /// Many retail `.TRK` files pair a soft rear spring (e.g. Montero rear
+    /// 941 lb/ft against a 5 kN static wheel load) with a 0.38 m stroke, so
+    /// the rear sat on its bump stops at rest and the nose pointed 15-23° up
+    /// ("speedboat" squat) on 64 of the 150 vehicles. The static load per axle
+    /// follows from where the wheels sit around the centre of mass; the rate
+    /// is raised only as far as needed for `REST_TRAVEL_FRACTION`, never
+    /// lowered, and capped at `MAX_SPRING_BOOST`. This replaces no retail
+    /// formula (the decompile has no ride-height rule); it is a stand-in for
+    /// whatever preload the original suspension carried.
+    fn static_spring_boost(&self) -> [f32; 2] {
+        // 75% of the stroke: a stiffer rest (65%) held the nose level to within
+        // 3.5 deg but made the autopilot hop and roll on ZONA/ASPEN; this keeps
+        // the static nose-up under 4 deg on every retail truck.
+        const REST_TRAVEL_FRACTION: f32 = 0.75;
+        const MAX_SPRING_BOOST: f32 = 3.0;
+        let zf = (self.wheels[0].mount.z + self.wheels[1].mount.z) * 0.5;
+        let zr = (self.wheels[2].mount.z + self.wheels[3].mount.z) * 0.5;
+        let span = (zr - zf).abs().max(0.5);
+        // Fraction of the weight on the front axle (moment balance about the
+        // rear axle), clamped to a sane 30-70% split.
+        let front = (zr.abs() / span).clamp(0.3, 0.7);
+        let weight = self.truck.mass_kg() * GRAVITY;
+        let mut boost = [1.0f32; 2];
+        for (axle, b) in boost.iter_mut().enumerate() {
+            let share = if axle == 0 { front } else { 1.0 - front };
+            let wheel_load = weight * share * 0.5;
+            let needed = wheel_load / (REST_TRAVEL_FRACTION * self.travel(axle));
+            let have = self.spring_rate(axle, 0).max(1.0);
+            *b = (needed / have).clamp(1.0, MAX_SPRING_BOOST);
+        }
+        boost
+    }
+
     /// Spring rate of one corner, N/m. `spring_rate` is lb/ft in every retail
     /// TRK (`faxle_spring_rate` 1178.4, `raxle_spring_rate` 1493.0).
     fn spring_rate(&self, axle: usize, i: usize) -> f32 {
-        let axle_rate = self.truck.axles[axle].spring_rate.max(1.0) * 14.593_903;
+        let axle_rate =
+            self.truck.axles[axle].spring_rate.max(1.0) * 14.593_903 * self.spring_boost[axle];
         // A motion ratio below 1 (the file's `spring_arm`) stiffens the wheel
         // rate; retail files carry 5.0 for every corner, so this is neutral.
         let arm = self.truck.axles[axle].tires[i % 2].spring_arm.abs();
@@ -395,7 +436,7 @@ impl Vehicle {
     /// `3.5·√spring_rate` formula; the spring rate also carries the corner's
     /// motion ratio.
     fn suspension(&self, axle: usize, i: usize) -> SpringDamper {
-        let rate_lb_ft = self.truck.axles[axle].spring_rate.max(1.0);
+        let rate_lb_ft = self.truck.axles[axle].spring_rate.max(1.0) * self.spring_boost[axle];
         SpringDamper::new(
             self.spring_rate(axle, i),
             SpringDamper::retail_damper(rate_lb_ft),
@@ -1543,6 +1584,91 @@ mod tests {
         // not a hit at full reach (which read as zero compression).
         let buried = v.cast_ground(vec3(0.0, -0.5, 0.0), dir, 0.93, &face);
         assert_eq!(buried, Some(0.0));
+    }
+
+    /// Static pitch of every retail vehicle at rest on flat ground.
+    #[test]
+    #[ignore]
+    fn static_pitch_all() {
+        let root = if std::path::Path::new("assets/extracted").exists() {
+            std::path::Path::new(".")
+        } else {
+            std::path::Path::new("..")
+        };
+        let (trucks, _) = crate::vehicle::load_roster(root);
+        let ground = flat();
+        for t in trucks {
+            let name = t.name.clone();
+            let (kf, kr) = (t.axles[0].spring_rate, t.axles[1].spring_rate);
+            let mut v = Vehicle::new(t);
+            v.reset(Vec3::new(0.0, 1.0, 0.0), 0.0);
+            for _ in 0..(3.0 * TICK_HZ) as usize {
+                v.step(&Input::default(), &ground);
+            }
+            println!(
+                "{:28} kF={:6.0} kR={:6.0} pitch={:5.1} compF={:.2}/{:.2} compR={:.2}/{:.2}",
+                name,
+                kf,
+                kr,
+                v.pitch_deg(),
+                v.wheels[0].compression,
+                v.travel(0),
+                v.wheels[2].compression,
+                v.travel(1)
+            );
+        }
+    }
+
+    /// Pitch / compression probe: full throttle on flat ground with the retail
+    /// Montero. `cargo test --release -p evox squat_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn squat_probe() {
+        let root = if std::path::Path::new("assets/extracted").exists() {
+            std::path::Path::new(".")
+        } else {
+            std::path::Path::new("..")
+        };
+        let (trucks, _) = crate::vehicle::load_roster(root);
+        let name = std::env::var("QA_TRUCK").unwrap_or("Montero".into());
+        let t = trucks
+            .iter()
+            .find(|t| t.name.contains(&name))
+            .cloned()
+            .unwrap();
+        let mut v = Vehicle::new(t);
+        let ground = flat();
+        v.reset(Vec3::new(0.0, 1.0, 0.0), 0.0);
+        for i in 0..(6.0 * TICK_HZ) as usize {
+            v.step(
+                &Input {
+                    throttle: std::env::var("QA_THR")
+                        .ok()
+                        .and_then(|x| x.parse().ok())
+                        .unwrap_or(1.0),
+                    drive_mode: 1,
+                    ..Default::default()
+                },
+                &ground,
+            );
+            if i % (TICK_HZ as usize / 4) == 0 {
+                let c: Vec<String> = v
+                    .wheels
+                    .iter()
+                    .map(|w| format!("{:.2}", w.compression))
+                    .collect();
+                let lo = v
+                    .wheels
+                    .iter()
+                    .map(|w| format!("{:.0}", w.load))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                println!(
+                    "t={:4.2} v={:5.1} km/h gear={} pitch={:5.1} y={:.2} comp={} load={} drive={:.0}",
+                    i as f32 / TICK_HZ, v.speed_kmh(), v.gear, v.pitch_deg(), v.pos.y, c.join(","), lo, v.drive_force
+                );
+            }
+        }
     }
 
     #[test]

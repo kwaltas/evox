@@ -57,6 +57,13 @@ enum Archive {
         name: String,
         size: u64,
     },
+    /// A `.POD` stored inside the disc's InstallShield `data1.cab`.
+    Cab {
+        iso: PathBuf,
+        name: String,
+        size: u64,
+        entry: super::installshield::Entry,
+    },
 }
 
 impl Archive {
@@ -64,6 +71,7 @@ impl Archive {
         match self {
             Archive::File { name, .. } => name,
             Archive::Iso { name, .. } => name,
+            Archive::Cab { name, .. } => name,
         }
     }
 
@@ -75,6 +83,7 @@ impl Archive {
         match self {
             Archive::File { size, .. } => *size,
             Archive::Iso { size, .. } => *size,
+            Archive::Cab { size, .. } => *size,
         }
     }
 }
@@ -108,6 +117,26 @@ fn read_archive(
                 .find(|p| &p.name == name)
                 .ok_or_else(|| format!("{name}: archive disappeared from the ISO"))?;
             pod.read()
+        }
+        Archive::Cab {
+            iso: iso_path,
+            name,
+            entry,
+            ..
+        } => {
+            if iso_cache
+                .as_ref()
+                .map(|(p, _)| p != iso_path)
+                .unwrap_or(true)
+            {
+                *iso_cache = Some((iso_path.clone(), iso::list_pods(iso_path)?));
+            }
+            let (_, pods) = iso_cache.as_mut().unwrap();
+            let cab = pods
+                .iter()
+                .find(|p| p.name.to_ascii_lowercase().ends_with("data1.cab"))
+                .ok_or_else(|| format!("{name}: data1.cab disappeared from the ISO"))?;
+            super::installshield::extract(&mut cab.reader(), entry)
         }
     }
 }
@@ -159,6 +188,54 @@ fn collect_pods(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> Result<(), 
     Ok(())
 }
 
+/// Archives on an ISO: loose `.POD` files, or, when the disc is an
+/// InstallShield installer, the `.POD` files inside `data1.cab`.
+fn iso_archives(path: &Path, pods: Vec<IsoPod>) -> Result<Vec<Archive>, String> {
+    let is_pod = |p: &IsoPod| {
+        let n = p.name.to_ascii_lowercase();
+        let n = n.split(';').next().unwrap_or(&n).to_string();
+        n.ends_with(".pod")
+    };
+    if pods.iter().any(is_pod) {
+        return Ok(pods
+            .into_iter()
+            .filter(is_pod)
+            .map(|p| Archive::Iso {
+                iso: path.to_path_buf(),
+                name: p.name,
+                size: p.size as u64,
+            })
+            .collect());
+    }
+    let hdr = pods
+        .iter()
+        .find(|p| p.name.to_ascii_lowercase().ends_with("data1.hdr"))
+        .ok_or_else(|| {
+            "this ISO holds neither .POD archives nor an InstallShield cabinet".to_string()
+        })?;
+    if !pods
+        .iter()
+        .any(|p| p.name.to_ascii_lowercase().ends_with("data1.cab"))
+    {
+        return Err("data1.hdr is on the disc but data1.cab is missing".into());
+    }
+    let entries = super::installshield::parse_header(&hdr.read()?)?;
+    let out: Vec<Archive> = entries
+        .into_iter()
+        .filter(|e| e.name.to_ascii_lowercase().ends_with(".pod"))
+        .map(|e| Archive::Cab {
+            iso: path.to_path_buf(),
+            name: e.name.clone(),
+            size: e.expanded,
+            entry: e,
+        })
+        .collect();
+    if out.is_empty() {
+        return Err("the InstallShield cabinet contains no .POD archives".into());
+    }
+    Ok(out)
+}
+
 fn folder_archives(dir: &Path) -> Result<Vec<Archive>, String> {
     let mut pods = Vec::new();
     collect_pods(dir, 0, &mut pods)?;
@@ -202,14 +279,7 @@ pub fn prepare(source: &Source) -> Result<Plan, String> {
     let mut mount = None;
     let archives: Vec<Archive> = match source {
         Source::Iso(path) => match iso::list_pods(path) {
-            Ok(pods) => pods
-                .into_iter()
-                .map(|p| Archive::Iso {
-                    iso: path.clone(),
-                    name: p.name,
-                    size: p.size as u64,
-                })
-                .collect(),
+            Ok(pods) => iso_archives(path, pods)?,
             Err(pure_error) => {
                 let m = iso::mount_fallback(path).map_err(|e| format!("{pure_error}; {e}"))?;
                 let list = folder_archives(m.point())?;

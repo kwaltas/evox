@@ -38,6 +38,158 @@ pub enum Phase {
     Finished,
 }
 
+/// Shortest horizontal distance from `p` to the segment `a`-`b`.
+fn seg_dist_xz(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+    let (p, a, b) = (vec2(p.x, p.z), vec2(a.x, a.z), vec2(b.x, b.z));
+    let ab = b - a;
+    let t = if ab.length_squared() < 1e-6 {
+        0.0
+    } else {
+        ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+    };
+    p.distance(a + ab * t)
+}
+
+/// Did the move `p0 -> p1` cross the gate line `a`-`b` (horizontal plane)?
+fn crossed_gate_xz(p0: Vec3, p1: Vec3, a: Vec3, b: Vec3) -> bool {
+    let (p0, p1, a, b) = (
+        vec2(p0.x, p0.z),
+        vec2(p1.x, p1.z),
+        vec2(a.x, a.z),
+        vec2(b.x, b.z),
+    );
+    let side = |o: Vec2, d: Vec2, q: Vec2| (d.x - o.x) * (q.y - o.y) - (d.y - o.y) * (q.x - o.x);
+    let (s0, s1) = (side(a, b, p0), side(a, b, p1));
+    let (t0, t1) = (side(p0, p1, a), side(p0, p1, b));
+    s0 * s1 <= 0.0 && t0 * t1 <= 0.0 && (s0 != 0.0 || s1 != 0.0)
+}
+
+/// Where on the lap the last `*** Course ***` gate sits (1.0 without gates).
+fn track_last_gate_frac(track: &Track, prog: &Progress) -> f32 {
+    track
+        .gates
+        .last()
+        .map_or(1.0, |g| prog.frac_at(g.centre()).clamp(0.05, 1.0))
+}
+
+/// How near (metres) the truck must pass a gate line it cannot be seen to
+/// cross (very slow frames, spawn on the line).
+const GATE_NEAR_M: f32 = 4.0;
+
+/// Gates ahead of the expected one that still count when crossed.
+const GATE_LOOKAHEAD: usize = 3;
+
+/// Where a vehicle is in the race: laps completed plus how far round the
+/// course it is. Replaces the odometer, which counted circles, detours and
+/// reversing as "progress".
+///
+/// The course is a closed loop of nodes. Each update finds the nearest node
+/// in a window around the last one (a global search once, to start), and a
+/// jump across the loop's seam in either direction changes the lap counter,
+/// so driving the wrong way unwinds progress. Cars on the grid sit behind the
+/// start line, which counts as lap -1 until they cross it.
+#[derive(Clone, Debug)]
+pub struct Progress {
+    xz: Vec<Vec2>,
+    cum: Vec<f32>,
+    total: f32,
+    idx: usize,
+    laps: i32,
+    started: bool,
+}
+
+impl Progress {
+    /// Search window (nodes either side of the last one).
+    const WINDOW: usize = 24;
+
+    pub fn new(line: &[Vec3]) -> Self {
+        let xz: Vec<Vec2> = line.iter().map(|p| vec2(p.x, p.z)).collect();
+        let mut cum = Vec::with_capacity(xz.len());
+        let mut acc = 0.0;
+        for i in 0..xz.len() {
+            cum.push(acc);
+            if xz.len() > 1 {
+                acc += xz[i].distance(xz[(i + 1) % xz.len()]);
+            }
+        }
+        Self {
+            xz,
+            cum,
+            total: acc.max(1.0),
+            idx: 0,
+            laps: 0,
+            started: false,
+        }
+    }
+
+    /// Feed the vehicle's position.
+    pub fn update(&mut self, pos: Vec3) {
+        let n = self.xz.len();
+        if n < 2 {
+            return;
+        }
+        let p = vec2(pos.x, pos.z);
+        let nearest = |from: usize, half: usize| {
+            // Nodes from `half` behind to `half` ahead of `from`, wrapping.
+            (0..=2 * half)
+                .map(|k| (from + n + k - half) % n)
+                .min_by(|&a, &b| {
+                    self.xz[a]
+                        .distance_squared(p)
+                        .total_cmp(&self.xz[b].distance_squared(p))
+                })
+                .unwrap_or(from)
+        };
+        if !self.started {
+            self.idx = (0..n)
+                .min_by(|&a, &b| {
+                    self.xz[a]
+                        .distance_squared(p)
+                        .total_cmp(&self.xz[b].distance_squared(p))
+                })
+                .unwrap_or(0);
+            self.started = true;
+            // Behind the start line: the lap before the first.
+            self.laps = if self.idx > n / 2 { -1 } else { 0 };
+            return;
+        }
+        let window = Self::WINDOW.min(n / 2);
+        let new = nearest(self.idx, window);
+        if new + n / 2 < self.idx {
+            self.laps += 1; // crossed the seam going forward
+        } else if self.idx + n / 2 < new {
+            self.laps -= 1; // crossed it backwards
+        }
+        self.idx = new;
+    }
+
+    /// Fraction (0..1) of the lap at the node nearest `pos`.
+    pub fn frac_at(&self, pos: Vec3) -> f32 {
+        let p = vec2(pos.x, pos.z);
+        (0..self.xz.len())
+            .min_by(|&a, &b| {
+                self.xz[a]
+                    .distance_squared(p)
+                    .total_cmp(&self.xz[b].distance_squared(p))
+            })
+            .map_or(1.0, |i| self.cum[i] / self.total)
+    }
+
+    /// Laps plus the fraction of the current one, in laps.
+    pub fn laps_f(&self) -> f32 {
+        self.laps as f32 + self.cum.get(self.idx).copied().unwrap_or(0.0) / self.total
+    }
+
+    /// The same, in metres along the course.
+    pub fn metres(&self) -> f32 {
+        self.laps_f() * self.total
+    }
+
+    pub fn lap_length(&self) -> f32 {
+        self.total
+    }
+}
+
 pub struct Opponent {
     pub vehicle: Vehicle,
     /// Seconds spent overturned and nearly stopped (auto-rescue timer).
@@ -46,6 +198,8 @@ pub struct Opponent {
     pub lane: f32,
     pub progress: usize,
     pub finished_at: Option<f32>,
+    /// Laps and distance round the course (drives place and finishing).
+    pub prog: Progress,
 }
 
 pub struct Race {
@@ -56,6 +210,16 @@ pub struct Race {
     pub countdown: f32,
     pub time: f32,
     pub lap: u32,
+    /// Laps in this race (the setup's choice, at most `MAX_LAPS`).
+    pub laps: u32,
+    /// Player progress round the course.
+    pub player_prog: Progress,
+    /// `laps_f` at which the race ends. The player finishes on the last gate
+    /// (or the last quarter probe), which is not exactly the seam of the loop,
+    /// so rivals are timed against the same line.
+    pub finish_progress: f32,
+    /// Where the player was last racing tick (gate crossing test).
+    pub last_player_pos: Vec3,
     pub lap_start: f32,
     pub best_lap: f32,
     pub last_lap: f32,
@@ -110,6 +274,33 @@ pub struct RaceConfig<'a> {
     pub ai_vehicles: Vec<Truck>,
     pub lines: Vec<ai::RacingLine>,
     pub skill: f32,
+}
+
+/// A `*** Paths ***` spline is a driving line when most of its points follow
+/// the terrain (within `PATH_GROUND_TOL_M`) and it is not a water-surface
+/// route.
+fn path_is_driveable(track: &Track, points: &[Vec3]) -> bool {
+    const PATH_GROUND_TOL_M: f32 = 4.0;
+    if points.len() < 8 {
+        return false;
+    }
+    let n = points.len() as f32;
+    let near = points
+        .iter()
+        .filter(|p| (p.y - track.height_at(p.x, p.z)).abs() <= PATH_GROUND_TOL_M)
+        .count() as f32;
+    let on_water = if track.water_height > 0.5 {
+        points
+            .iter()
+            .filter(|p| {
+                (p.y - track.water_height).abs() <= 0.8
+                    && track.height_at(p.x, p.z) < track.water_height
+            })
+            .count() as f32
+    } else {
+        0.0
+    };
+    near / n >= 0.6 && on_water / n < 0.3
 }
 
 /// Coarse lap for a level with no recorded AI file *and* no `*** Paths ***`
@@ -223,7 +414,7 @@ fn air_level(mut input: Input, v: &Vehicle, sample: &dyn Fn(f32, f32) -> (f32, S
 }
 
 impl Race {
-    pub fn build(mut cfg: RaceConfig, track: Track) -> Result<Self, String> {
+    pub fn build(mut cfg: RaceConfig, mut track: Track) -> Result<Self, String> {
         // Level gates are the real course; only a level with neither a recorded
         // AI lap nor a `*** Paths ***` spline (`MATT`) gets the generated
         // circuit, so a lap on DEVIL is the one the disc defines.
@@ -240,7 +431,23 @@ impl Race {
             );
         }
         if cfg.lines.is_empty() {
-            let mut paths: Vec<&Vec<Vec3>> = track.paths.iter().filter(|p| p.len() >= 2).collect();
+            // Many `*** Paths ***` splines are not driving lines at all: boats
+            // ride the water surface, aircraft fly tens of metres up. Racing
+            // those put the field on the sea floor (SKULL1-5) or in a harbour
+            // (ALASKA1-5). Only splines that hug the ground are courses; a
+            // level with none is an open 4x4 proving ground (free roam from
+            // the `.SIT` spawn grid on dry land).
+            let mut paths: Vec<&Vec<Vec3>> = track
+                .paths
+                .iter()
+                .filter(|p| p.len() >= 2 && path_is_driveable(&track, p))
+                .collect();
+            if paths.is_empty() && !track.paths.is_empty() {
+                eprintln!(
+                    "race: {} has no driveable course (its splines float over water or ground); open 4x4 ground from the spawn grid",
+                    cfg.track_id
+                );
+            }
             paths.sort_by_key(|p| std::cmp::Reverse(p.len()));
             for (i, path) in paths.iter().take(8).enumerate() {
                 cfg.lines.push(line_from_path(&track, path, i));
@@ -249,6 +456,9 @@ impl Race {
         if cfg.lines.is_empty() {
             cfg.lines.push(placeholder_line(&track));
         }
+        // Never start a race with the field under the water plane.
+        let course_pts: Vec<Vec3> = cfg.lines[0].nodes.iter().map(|n| n.pos).collect();
+        track.fit_water_to_course(&course_pts);
         let mut player = Vehicle::new(cfg.player_truck);
         let start = cfg.lines[0].nodes[0].pos;
         player.reset_on_ground(start.x, start.z, cfg.lines[0].nodes[0].heading, &track);
@@ -270,6 +480,7 @@ impl Race {
             d.fit_to(&v);
             let (p, yaw) = ai::grid_slot(&track, &line, i + 4);
             v.reset_on_ground(p.x, p.z, yaw, &track);
+            let line_pts: Vec<Vec3> = line.nodes.iter().map(|n| n.pos).collect();
             opponents.push(Opponent {
                 vehicle: v,
                 flip_t: 0.0,
@@ -277,9 +488,14 @@ impl Race {
                 lane: 0.0,
                 progress: 0,
                 finished_at: None,
+                prog: Progress::new(&line_pts),
             });
         }
 
+        let finish_progress = {
+            let pp = Progress::new(&course_pts);
+            (cfg.laps.clamp(1, MAX_LAPS) - 1) as f32 + track_last_gate_frac(&track, &pp)
+        };
         let colliders = crate::collide::build(&track);
         let traffic = track
             .props
@@ -319,6 +535,10 @@ impl Race {
             countdown: if autodrive { 0.0 } else { COUNTDOWN },
             time: 0.0,
             lap: 1,
+            laps: cfg.laps.clamp(1, MAX_LAPS),
+            player_prog: Progress::new(&course_pts),
+            finish_progress,
+            last_player_pos: start,
             lap_start: 0.0,
             best_lap: 0.0,
             last_lap: 0.0,
@@ -505,7 +725,9 @@ impl Race {
             o.vehicle.collide(colliders);
             emit_vehicle_wheel_vfx(&self.track, &mut self.vfx, &o.vehicle, dt);
             o.progress = o.driver.cursor;
-            if o.driver.cursor + 3 >= o.driver.line.nodes.len() && o.finished_at.is_none() {
+            // A rival finishes after the race's laps, not after the first one.
+            o.prog.update(o.vehicle.pos);
+            if o.prog.laps_f() >= self.finish_progress && o.finished_at.is_none() {
                 o.finished_at = Some(self.time);
             }
         }
@@ -554,30 +776,61 @@ impl Race {
         // Checkpoints: the level's own `*** Course ***` gates when it ships
         // them, else a quarter of the recorded line.
         if self.phase == Phase::Racing {
-            if let Some(node) = self.checkpoint_target() {
-                if (self.player.pos - node).length() < self.checkpoint_radius() {
-                    self.checkpoint += 1;
-                    if self.checkpoint >= self.checkpoint_total() {
-                        self.checkpoint = 0;
-                        self.last_lap = self.time - self.lap_start;
-                        if self.best_lap == 0.0 || self.last_lap < self.best_lap {
-                            self.best_lap = self.last_lap;
-                        }
-                        self.lap_start = self.time;
-                        self.lap += 1;
-                        if self.lap > MAX_LAPS {
-                            self.phase = Phase::Finished;
-                            self.finished_at = Some(self.time);
-                        }
+            let prev = self.last_player_pos;
+            self.last_player_pos = self.player.pos;
+            // A `*** Course ***` gate is a line to cross; the quarter-line
+            // probes (levels without gates) are points to pass near. Gates
+            // are taken in order, but crossing one of the next two counts the
+            // ones before it as passed: a gate the recorded line never
+            // touches must not freeze the lap counter for the whole race.
+            let gates = &self.track.gates;
+            let advance = if gates.is_empty() {
+                self.checkpoint_target()
+                    .filter(|node| (self.player.pos - *node).length() < self.checkpoint_radius())
+                    .map(|_| self.checkpoint + 1)
+            } else {
+                (0..GATE_LOOKAHEAD.min(gates.len().saturating_sub(self.checkpoint)))
+                    .find(|&k| {
+                        let g = &gates[self.checkpoint + k];
+                        crossed_gate_xz(prev, self.player.pos, g.start, g.end)
+                            || seg_dist_xz(self.player.pos, g.start, g.end) < GATE_NEAR_M
+                    })
+                    .map(|k| self.checkpoint + k + 1)
+            };
+            if let Some(next) = advance {
+                self.checkpoint = next;
+                if self.checkpoint >= self.checkpoint_total() {
+                    self.checkpoint = 0;
+                    self.last_lap = self.time - self.lap_start;
+                    if self.best_lap == 0.0 || self.last_lap < self.best_lap {
+                        self.best_lap = self.last_lap;
+                    }
+                    self.lap_start = self.time;
+                    self.lap += 1;
+                    if self.lap > self.laps {
+                        self.phase = Phase::Finished;
+                        self.finished_at = Some(self.time);
                     }
                 }
             }
         }
 
+        // Place: laps and distance round the course, finishers by finish time.
+        if self.phase == Phase::Racing {
+            self.player_prog.update(self.player.pos);
+        }
+        let me = self.player_prog.laps_f();
+        let margin = 4.0 / self.player_prog.lap_length();
+        let mine = self.finished_at;
         self.position = 1 + self
             .opponents
             .iter()
-            .filter(|o| o.vehicle.distance_m > self.player.distance_m + 4.0)
+            .filter(|o| match (o.finished_at, mine) {
+                (Some(rt), Some(pt)) => rt < pt,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => o.prog.laps_f() > me + margin,
+            })
             .count();
     }
 
@@ -846,15 +1099,27 @@ impl Race {
     }
 
     pub fn standings(&self) -> Vec<(String, f32)> {
-        let mut v: Vec<(String, f32)> = std::iter::once(("You".to_string(), self.time))
-            .chain(
-                self.opponents
-                    .iter()
-                    .map(|o| (o.driver.name.clone(), o.finished_at.unwrap_or(self.time))),
+        // Finishers first by finish time; the rest by how far they got (their
+        // time is shown as the current race time).
+        let key = |fin: Option<f32>, laps_f: f32| match fin {
+            Some(t) => (0u8, t),
+            None => (1u8, -laps_f),
+        };
+        let mut v: Vec<((u8, f32), String, f32)> = std::iter::once((
+            key(self.finished_at, self.player_prog.laps_f()),
+            "You".to_string(),
+            self.finished_at.unwrap_or(self.time),
+        ))
+        .chain(self.opponents.iter().map(|o| {
+            (
+                key(o.finished_at, o.prog.laps_f()),
+                o.driver.name.clone(),
+                o.finished_at.unwrap_or(self.time),
             )
-            .collect();
-        v.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        v
+        }))
+        .collect();
+        v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        v.into_iter().map(|(_, n, t)| (n, t)).collect()
     }
 
     pub fn place(&self) -> u32 {
@@ -1362,6 +1627,14 @@ pub(crate) mod drive_qa {
         }
     }
 
+    /// QA pilot skill (`EVOX_PILOT_SKILL`, default 0.85).
+    pub fn pilot_skill() -> f32 {
+        std::env::var("EVOX_PILOT_SKILL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.85)
+    }
+
     pub fn drive(track_id: &str, seconds: f32) -> Metrics {
         let track = Track::load(track_id, &data("track/track")).expect("track loads");
         let lines = crate::assets::read_ai_lines(&data("data/data/AI"), track_id);
@@ -1386,7 +1659,7 @@ pub(crate) mod drive_qa {
             track,
         )
         .expect("race builds");
-        race.pilot = Some(ai::Driver::new(lines[0].clone(), 0.85, "pilot", 0));
+        race.pilot = Some(ai::Driver::new(lines[0].clone(), pilot_skill(), "pilot", 0));
         let mut audio = Audio::new();
         audio.enabled = false;
         let (mut n, mut air, mut two, mut tip, mut flips, mut last) = (0, 0, 0, 0, 0usize, 0i32);
@@ -1438,6 +1711,448 @@ pub(crate) mod drive_qa {
         }
     }
 
+    /// Course vs water for every level, using the course the race really uses.
+    /// `cargo test --release -p evox course_water_audit -- --ignored --nocapture`
+    fn ring(n: usize, r: f32) -> Vec<Vec3> {
+        (0..n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * std::f32::consts::TAU;
+                vec3(a.cos() * r, 0.0, a.sin() * r)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn progress_counts_laps_and_unwinds_when_reversing() {
+        let line = ring(32, 100.0);
+        let mut p = Progress::new(&line);
+        // Starts just behind node 0 (on the seam): the lap before the first.
+        p.update(line[31]);
+        assert!(p.laps_f() < 0.0, "grid is behind the line: {}", p.laps_f());
+        // Forward round the loop twice.
+        for lap in 0..2 {
+            for node in &line {
+                p.update(*node);
+            }
+            assert!(
+                (p.laps_f() - (lap as f32 + 0.97)).abs() < 0.05,
+                "lap {lap}: {}",
+                p.laps_f()
+            );
+        }
+        // Driving back the way it came loses the laps again.
+        for i in (0..32).rev() {
+            p.update(line[i]);
+        }
+        // One more step back crosses the seam the wrong way: a lap is lost.
+        p.update(line[31]);
+        assert!(p.laps_f() < 1.0, "reversing unwinds: {}", p.laps_f());
+    }
+
+    #[test]
+    fn circling_in_place_is_not_progress() {
+        let line = ring(32, 100.0);
+        let mut p = Progress::new(&line);
+        p.update(line[3]);
+        let start = p.laps_f();
+        // Wobble around one spot (the odometer would have counted every metre).
+        for k in 0..200 {
+            let a = k as f32 * 0.5;
+            p.update(line[3] + vec3(a.cos() * 5.0, 0.0, a.sin() * 5.0));
+        }
+        assert!(
+            (p.laps_f() - start).abs() < 0.1,
+            "{} vs {start}",
+            p.laps_f()
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn course_water_audit() {
+        let root = data("track/track");
+        let mut ids: Vec<String> = std::fs::read_dir(root.join("LEVELS"))
+            .unwrap()
+            .flatten()
+            .filter_map(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .strip_suffix(".LVL")
+                    .map(str::to_string)
+            })
+            .collect();
+        ids.sort();
+        let (trucks, _) = crate::vehicle::load_roster(repo_root());
+        let player = trucks
+            .iter()
+            .find(|t| t.name.contains("Montero"))
+            .cloned()
+            .unwrap();
+        println!(
+            "{:10} {:>6} {:>5} {:>6} {:>6} {:>7} {:>7}",
+            "track", "water", "pts", ">0.5m%", ">1.2m%", "maxdep", "ground_min"
+        );
+        for id in ids {
+            let Ok(track) = Track::load(&id, &root) else {
+                continue;
+            };
+            let lines = crate::assets::read_ai_lines(&data("data/data/AI"), &id);
+            let wh0 = track.water_height;
+            let Ok(race) = Race::build(
+                RaceConfig {
+                    track_id: &id,
+                    class: 1,
+                    laps: 2,
+                    opponents: 0,
+                    player_truck: player.clone(),
+                    ai_vehicles: vec![],
+                    lines,
+                    skill: 0.8,
+                },
+                track,
+            ) else {
+                println!("{id:10} build failed");
+                continue;
+            };
+            let t2 = &race.track;
+            let wh = t2.water_height;
+            let d: Vec<f32> = race
+                .course
+                .iter()
+                .map(|p| (wh - t2.height_at(p.x, p.z)).max(0.0))
+                .collect();
+            let n = d.len().max(1) as f32;
+            let p05 = 100.0 * d.iter().filter(|x| **x > 0.5).count() as f32 / n;
+            let p12 = 100.0 * d.iter().filter(|x| **x > 1.2).count() as f32 / n;
+            let mx = d.iter().cloned().fold(0.0f32, f32::max);
+            let mut dy: Vec<f32> = race
+                .course
+                .iter()
+                .map(|p| (p.y - t2.height_at(p.x, p.z)).abs())
+                .collect();
+            dy.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let med_dy = dy.get(dy.len() / 2).copied().unwrap_or(0.0);
+            let on_ground =
+                100.0 * dy.iter().filter(|v| **v <= 3.0).count() as f32 / dy.len().max(1) as f32;
+            print!("dy_med={med_dy:6.1} on_ground={on_ground:4.0}%  ");
+            let gmin = race
+                .course
+                .iter()
+                .map(|p| t2.height_at(p.x, p.z))
+                .fold(f32::MAX, f32::min);
+            let mut g: Vec<f32> = race.course.iter().map(|p| t2.height_at(p.x, p.z)).collect();
+            g.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let q = |f: f32| {
+                g.get(((g.len() as f32 - 1.0) * f) as usize)
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            println!("{:10} {:6.1}->{:5.1} {:5} {:6.0} {:6.0} {:7.2} {:7.1}  g[p10/p50/p90]={:.1}/{:.1}/{:.1}", id, wh0, wh, d.len(), p05, p12, mx, gmin, q(0.1), q(0.5), q(0.9));
+        }
+    }
+
+    /// No race may put the field under more than `DEEP_M` of water for more
+    /// than a tenth of the course, whatever the retail water plane says.
+    #[test]
+    fn courses_never_submerge_the_field() {
+        require_assets!();
+        let root = data("track/track");
+        let (trucks, _) = crate::vehicle::load_roster(repo_root());
+        let player = trucks
+            .iter()
+            .find(|t| t.name.contains("Montero"))
+            .cloned()
+            .unwrap();
+        for id in [
+            "RIVER1", "RIVER3", "SKULL1", "SKULL4", "ALASKA1", "ALASKA3", "ASPEN",
+        ] {
+            let track = Track::load(id, &root).unwrap();
+            let lines = crate::assets::read_ai_lines(&data("data/data/AI"), id);
+            let race = Race::build(
+                RaceConfig {
+                    track_id: id,
+                    class: 1,
+                    laps: 2,
+                    opponents: 0,
+                    player_truck: player.clone(),
+                    ai_vehicles: vec![],
+                    lines,
+                    skill: 0.8,
+                },
+                track,
+            )
+            .unwrap();
+            let t = &race.track;
+            let deep = race
+                .course
+                .iter()
+                .filter(|p| t.water_height - t.height_at(p.x, p.z) > 1.2)
+                .count();
+            let share = deep as f32 / race.course.len() as f32;
+            // ALASKA keeps its harbour bridge samples (deeper than a causeway
+            // can fix); RIVER/SKULL must be fully wadable.
+            let limit = if id.starts_with("ALASKA") { 0.25 } else { 0.10 };
+            assert!(
+                share <= limit,
+                "{id}: {:.0}% of the course is under >1.2 m of water",
+                share * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn gate_crossing_is_a_line_test_not_a_radius() {
+        let (a, b) = (vec3(-20.0, 0.0, 0.0), vec3(20.0, 0.0, 0.0));
+        // Straight through the middle, and near the end of a wide gate.
+        assert!(crossed_gate_xz(
+            vec3(0.0, 0.0, -1.0),
+            vec3(0.0, 0.0, 1.0),
+            a,
+            b
+        ));
+        assert!(crossed_gate_xz(
+            vec3(18.0, 0.0, 1.0),
+            vec3(18.0, 0.0, -1.0),
+            a,
+            b
+        ));
+        // Beyond the end, or not reaching the line: no crossing.
+        assert!(!crossed_gate_xz(
+            vec3(30.0, 0.0, -1.0),
+            vec3(30.0, 0.0, 1.0),
+            a,
+            b
+        ));
+        assert!(!crossed_gate_xz(
+            vec3(0.0, 0.0, -3.0),
+            vec3(0.0, 0.0, -1.0),
+            a,
+            b
+        ));
+        assert!((seg_dist_xz(vec3(30.0, 0.0, 0.0), a, b) - 10.0).abs() < 1e-3);
+    }
+
+    /// The race ends after the chosen number of laps, with the player placed.
+    /// (Before: it always took five laps, and a gate off the racing line
+    /// froze the lap counter for good.)
+    #[test]
+    fn autopilot_finishes_the_chosen_laps() {
+        require_assets!();
+        let id = "ASPEN";
+        let track = Track::load(id, &data("track/track")).unwrap();
+        let lines = crate::assets::read_ai_lines(&data("data/data/AI"), id);
+        let (trucks, _) = crate::vehicle::load_roster(repo_root());
+        let player = trucks
+            .iter()
+            .find(|t| t.name.contains("Montero"))
+            .cloned()
+            .unwrap();
+        let mut race = Race::build(
+            RaceConfig {
+                track_id: id,
+                class: 1,
+                laps: 2,
+                opponents: 2,
+                player_truck: player,
+                ai_vehicles: trucks.iter().skip(3).take(2).cloned().collect(),
+                lines: lines.clone(),
+                skill: 0.8,
+            },
+            track,
+        )
+        .unwrap();
+        race.pilot = Some(ai::Driver::new(lines[0].clone(), pilot_skill(), "pilot", 0));
+        let mut audio = Audio::new();
+        audio.enabled = false;
+        assert_eq!(race.laps, 2);
+        for _ in 0..((COUNTDOWN + 330.0) / DT) as usize {
+            race.tick(DT, Input::default(), &mut audio, 0.0);
+            if race.phase == Phase::Finished {
+                break;
+            }
+        }
+        assert_eq!(
+            race.phase,
+            Phase::Finished,
+            "lap {} of {}",
+            race.lap,
+            race.laps
+        );
+        assert_eq!(race.lap, 3, "two laps counted, then the race ends");
+        assert!((1..=3).contains(&race.position), "place {}", race.position);
+    }
+
+    /// Laps, checkpoints and place over a whole race with the autopilot and
+    /// three rivals. `QA_TRACK=ASPEN QA_LAPS=2 QA_SECS=400 cargo test --release -p evox lap_trace -- --ignored --nocapture`
+    /// Distance from each `*** Course ***` gate to the racing line, and the
+    /// radius the lap logic accepts. `QA_TRACK=ASPEN cargo test ... gate_audit`
+    #[test]
+    #[ignore]
+    fn gate_audit() {
+        let root = data("track/track");
+        let mut ids: Vec<String> = match std::env::var("QA_TRACK") {
+            Ok(t) => vec![t],
+            Err(_) => std::fs::read_dir(root.join("LEVELS"))
+                .unwrap()
+                .flatten()
+                .filter_map(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .strip_suffix(".LVL")
+                        .map(str::to_string)
+                })
+                .collect(),
+        };
+        ids.sort();
+        let (trucks, _) = crate::vehicle::load_roster(repo_root());
+        let player = trucks
+            .iter()
+            .find(|t| t.name.contains("Montero"))
+            .cloned()
+            .unwrap();
+        for id in ids {
+            let Ok(track) = Track::load(&id, &root) else {
+                continue;
+            };
+            if track.gates.is_empty() {
+                continue;
+            }
+            let lines = crate::assets::read_ai_lines(&data("data/data/AI"), &id);
+            let Ok(race) = Race::build(
+                RaceConfig {
+                    track_id: &id,
+                    class: 1,
+                    laps: 2,
+                    opponents: 0,
+                    player_truck: player.clone(),
+                    ai_vehicles: vec![],
+                    lines,
+                    skill: 0.8,
+                },
+                track,
+            ) else {
+                continue;
+            };
+            let mut bad = Vec::new();
+            for (i, g) in race.track.gates.iter().enumerate() {
+                let d = race
+                    .course
+                    .iter()
+                    .map(|p| seg_dist_xz(*p, g.start, g.end))
+                    .fold(f32::MAX, f32::min);
+                if d > 8.0 {
+                    bad.push(format!("g{i}: line passes {d:.0} m from the gate line"));
+                }
+            }
+            println!(
+                "{id:9} gates {:2} course {:4} nodes: {}",
+                race.track.gates.len(),
+                race.course.len(),
+                if bad.is_empty() {
+                    "all reachable".to_string()
+                } else {
+                    bad.join(", ")
+                }
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn lap_trace() {
+        let id = std::env::var("QA_TRACK").unwrap_or("ASPEN".into());
+        let laps: u32 = std::env::var("QA_LAPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
+        let secs: f32 = std::env::var("QA_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300.0);
+        let track = Track::load(&id, &data("track/track")).unwrap();
+        let lines = crate::assets::read_ai_lines(&data("data/data/AI"), &id);
+        let (trucks, _) = crate::vehicle::load_roster(repo_root());
+        let player = trucks
+            .iter()
+            .find(|t| t.name.contains("Montero"))
+            .cloned()
+            .unwrap();
+        let mut race = Race::build(
+            RaceConfig {
+                track_id: &id,
+                class: 1,
+                laps,
+                opponents: 3,
+                player_truck: player,
+                ai_vehicles: trucks.iter().skip(3).take(3).cloned().collect(),
+                lines: lines.clone(),
+                skill: 0.8,
+            },
+            track,
+        )
+        .unwrap();
+        let first = race.course.clone();
+        let line0 = ai::RacingLine {
+            driver: "pilot".into(),
+            class: 1,
+            nodes: first
+                .iter()
+                .map(|p| ai::Node {
+                    pos: *p,
+                    heading: 0.0,
+                    flag: 0,
+                    speed_cap: 22.0,
+                })
+                .collect(),
+        };
+        let mut line0 = line0;
+        line0.compute_speed_caps();
+        race.pilot = Some(ai::Driver::new(
+            lines.first().cloned().unwrap_or(line0),
+            0.85,
+            "pilot",
+            0,
+        ));
+        let mut audio = Audio::new();
+        audio.enabled = false;
+        println!(
+            "course nodes {} laps {} gates {}",
+            race.course.len(),
+            race.laps,
+            race.track.gates.len()
+        );
+        let mut last_lap = 1;
+        for i in 0..((COUNTDOWN + secs) / DT) as usize {
+            race.tick(DT, Input::default(), &mut audio, 0.0);
+            let t = i as f32 * DT;
+            if race.lap != last_lap || i % 1200 == 0 || race.phase == Phase::Finished {
+                last_lap = race.lap;
+                println!(
+                    "t={:6.1} phase={:?} lap={}/{} chk={} place={} me={:.2} rivals={:?} fin={:?}",
+                    t,
+                    race.phase,
+                    race.lap.min(race.laps),
+                    race.laps,
+                    race.checkpoint,
+                    race.position,
+                    race.player_prog.laps_f(),
+                    race.opponents
+                        .iter()
+                        .map(|o| (o.prog.laps_f() * 100.0).round() / 100.0)
+                        .collect::<Vec<_>>(),
+                    race.opponents
+                        .iter()
+                        .map(|o| o.finished_at.map(|x| x.round()))
+                        .collect::<Vec<_>>()
+                );
+            }
+            if race.phase == Phase::Finished {
+                break;
+            }
+        }
+        println!("standings {:?}", race.standings());
+    }
+
     #[test]
     #[ignore]
     fn drive_trace() {
@@ -1464,7 +2179,18 @@ pub(crate) mod drive_qa {
             track,
         )
         .unwrap();
-        race.pilot = Some(ai::Driver::new(lines[0].clone(), 0.85, "pilot", 0));
+        race.pilot = Some(ai::Driver::new(lines[0].clone(), pilot_skill(), "pilot", 0));
+        if std::env::var("QA_CONFIG").is_ok() {
+            let p = &race.player;
+            println!("CONFIG {:?}", p.config);
+            for (i, a) in p.truck.axles.iter().enumerate() {
+                println!(
+                    "AXLE{i} spring_rate={} max_compr={} ",
+                    a.spring_rate, a.max_compression
+                );
+            }
+            println!("TRUCK final={} cd={}", p.truck.final_drive, p.truck.cd);
+        }
         let mut audio = Audio::new();
         audio.enabled = false;
         let secs: f32 = std::env::var("QA_SECS")
@@ -1516,6 +2242,94 @@ pub(crate) mod drive_qa {
         assert!(m.off_line < 0.05, "off the line {:.0}%", m.off_line * 100.0);
         assert!(m.airborne < 0.20, "airborne {:.0}%", m.airborne * 100.0);
         assert!(m.mean_kmh > 50.0, "too slow {:.0} km/h", m.mean_kmh);
+    }
+
+    /// Where and why the body tips past 25 deg of roll.
+    /// `EVOX_TIP_TRACK=MCROSS cargo test --release -p evox tip_trace -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn tip_trace() {
+        let id = std::env::var("EVOX_TIP_TRACK").unwrap_or("MCROSS".into());
+        let track = Track::load(&id, &data("track/track")).expect("track loads");
+        let lines = crate::assets::read_ai_lines(&data("data/data/AI"), &id);
+        let (trucks, _) = crate::vehicle::load_roster(repo_root());
+        let player = trucks
+            .iter()
+            .find(|t| t.name.contains("Montero"))
+            .or(trucks.first())
+            .cloned()
+            .unwrap();
+        let mut race = Race::build(
+            RaceConfig {
+                track_id: &id,
+                class: 1,
+                laps: 2,
+                opponents: 0,
+                player_truck: player,
+                ai_vehicles: trucks.iter().take(8).cloned().collect(),
+                lines: lines.clone(),
+                skill: 0.8,
+            },
+            track,
+        )
+        .unwrap();
+        race.pilot = Some(ai::Driver::new(lines[0].clone(), pilot_skill(), "pilot", 0));
+        let mut audio = Audio::new();
+        audio.enabled = false;
+        let mut in_tip = false;
+        let mut rescues = 0;
+        if let Ok(w) = std::env::var("EVOX_TIP_NODES") {
+            let v: Vec<f32> = w.split(',').filter_map(|x| x.parse().ok()).collect();
+            for n in &lines[0].nodes {
+                if (n.pos.x - v[0]).abs() < v[2] && (n.pos.z - v[1]).abs() < v[2] {
+                    println!(
+                        "{id} NODE ({:.0},{:.1},{:.0}) ground={:.1} cap={:.0}km/h",
+                        n.pos.x,
+                        n.pos.y,
+                        n.pos.z,
+                        race.track.height_at_world(n.pos.x, n.pos.z),
+                        n.speed_cap * 3.6
+                    );
+                }
+            }
+        }
+        let mut t = 0.0f32;
+        for i in 0..(((COUNTDOWN + 60.0) / DT) as usize) {
+            let was = race.flip_t;
+            race.tick(DT, Input::default(), &mut audio, 0.0);
+            if race.phase != Phase::Racing {
+                continue;
+            }
+            t += DT;
+            if was > 0.0 && race.flip_t == 0.0 && was > FLIP_RESET_TIME - 0.1 {
+                rescues += 1;
+            }
+            let p = &race.player;
+            let roll = p.roll_deg();
+            let tip = roll.abs() > 25.0;
+            let (lo, hi): (f32, f32) = std::env::var("EVOX_TIP_WINDOW")
+                .ok()
+                .and_then(|w| {
+                    let mut it = w.split(',');
+                    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+                })
+                .unwrap_or((1e9, 1e9));
+            if t >= lo && t <= hi && i % 6 == 0 {
+                let gh = race.track.height_at_world(p.pos.x, p.pos.z);
+                println!("{id} t={t:5.2} pos=({:.0},{:.0}) y={:.2} ground={gh:.2} kmh={:3.0} roll={roll:5.1} pitch={:5.1} vy={:5.1} wheels={:?}",
+                    p.pos.x, p.pos.z, p.pos.y, p.speed_kmh(), p.pitch_deg(), p.vel.y, p.wheels.iter().map(|w| w.grounded as u8).collect::<Vec<_>>());
+            }
+            if tip && !in_tip || (tip && i % 15 == 0) {
+                let down: Vec<u8> = p.wheels.iter().map(|w| w.grounded as u8).collect();
+                let n = race.track.normal_at_world(p.pos.x, p.pos.z);
+                let rf = vec3(p.right().x, 0.0, p.right().z).normalize_or_zero();
+                let g_roll = (-n.dot(rf)).clamp(-1.0, 1.0).asin().to_degrees();
+                println!("{id} t={t:5.1} pos=({:.0},{:.0}) kmh={:3.0} roll={roll:5.1} ground_cross_slope={g_roll:5.1} pitch={:5.1} wheels={down:?}",
+                    p.pos.x, p.pos.z, p.speed_kmh(), p.pitch_deg());
+            }
+            in_tip = tip;
+        }
+        println!("{id} rescues={rescues}");
     }
 
     /// `cargo test --release -p evox drive_report -- --ignored --nocapture`

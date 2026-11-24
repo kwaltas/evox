@@ -288,6 +288,10 @@ impl Finder {
                 "unknown/unknown/DATA",
                 "unknown/ui/DATA",
                 "texture/texture/ART",
+                // Palettes of the ART textures; without them no tile's mean
+                // colour can be computed (every `ground_colors` entry fell back
+                // to the same dust colour).
+                "texture/palette/ART",
                 "texture/ui/ART",
                 "evo2/texture/ART",
             ] {
@@ -516,6 +520,26 @@ fn build_material_colors(
     (tints, ground_colors)
 }
 
+/// How a level's course relates to its water plane (see `Track::fit_water_to_course`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CourseKind {
+    /// The course stays mostly above the waterline; bridges and short fords
+    /// are left to the retail water.
+    Circuit,
+    /// The retail course runs along a river bed or lake floor (most of it
+    /// below the water plane), so the water is brought down to a wading depth.
+    WadingCourse,
+}
+
+/// Wading depth a truck can keep driving in without being swallowed.
+pub const WADE_M: f32 = 0.8;
+/// Water deeper than this over the course is a submerged vehicle.
+const DEEP_M: f32 = 1.2;
+/// Largest rise the causeway may add; deeper dips are bridges/piers.
+const MAX_LIFT_M: f32 = 2.5;
+const CAUSEWAY_RADIUS_M: f32 = 8.0;
+const CAUSEWAY_FALLOFF_M: f32 = 8.0;
+
 impl Track {
     /// `root` is the shared track asset root; all tracks live side by side in
     /// `DATA/`, `LEVELS/` and `WORLD/`.
@@ -640,6 +664,117 @@ impl Track {
 
     pub fn size_m(&self) -> f32 {
         (GRID - 1) as f32 * self.scale
+    }
+
+    /// Keep the racing line out of deep water.
+    ///
+    /// Several levels (RIVER1-5, SKULL1-5, parts of ALASKA) place the course on
+    /// a river bed or harbour floor several metres under the retail water
+    /// plane, which drowned every vehicle under dark, nearly opaque water.
+    /// The retail data carries no wading rule, so this derives one from the
+    /// course itself:
+    ///
+    /// * a course mostly below the waterline ([`CourseKind::WadingCourse`])
+    ///   gets the water plane lowered to `WADE_M` over its lowest tenth, i.e.
+    ///   a river to ford instead of a lake to sink in;
+    /// * every course sample still deeper than `DEEP_M` is raised on a
+    ///   causeway (smooth-edged corridor) to a wading depth, unless it is more
+    ///   than `MAX_LIFT_M` down, which marks a bridge or pier.
+    pub fn fit_water_to_course(&mut self, course: &[Vec3]) -> CourseKind {
+        if self.water_height <= 0.5 || course.len() < 2 {
+            return CourseKind::Circuit;
+        }
+        let ground: Vec<f32> = course.iter().map(|p| self.height_at(p.x, p.z)).collect();
+        let mut sorted = ground.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let at = |f: f32| sorted[(((sorted.len() - 1) as f32) * f) as usize];
+        let kind = if at(0.5) < self.water_height {
+            CourseKind::WadingCourse
+        } else {
+            CourseKind::Circuit
+        };
+        let before = self.water_height;
+        if kind == CourseKind::WadingCourse {
+            self.water_height = (at(0.1) + WADE_M).min(self.water_height);
+            eprintln!(
+                "track {}: course runs below the water plane; water {:.1} -> {:.1} m",
+                self.id, before, self.water_height
+            );
+        }
+        let target = self.water_height - WADE_M;
+        let lifted = self.raise_causeway(course, &ground, target);
+        if lifted > 0 {
+            eprintln!(
+                "track {}: {lifted} course samples raised to a {WADE_M} m ford",
+                self.id
+            );
+        }
+        kind
+    }
+
+    /// Raise a corridor around each course segment up to `target` (metres);
+    /// returns how many course samples needed it.
+    fn raise_causeway(&mut self, course: &[Vec3], ground: &[f32], target: f32) -> usize {
+        let mut needed = vec![false; course.len()];
+        let mut count = 0;
+        for (i, g) in ground.iter().enumerate() {
+            let deficit = target - *g;
+            if self.water_height - *g > DEEP_M && deficit > 0.0 && deficit <= MAX_LIFT_M {
+                needed[i] = true;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return 0;
+        }
+        let reach = CAUSEWAY_RADIUS_M + CAUSEWAY_FALLOFF_M;
+        let scale = self.scale.max(0.01);
+        let max_cell = (GRID - 1) as f32;
+        let target_units = ((target - self.height_offset) / HEIGHT_M_PER_UNIT)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16;
+        for i in 0..course.len() {
+            let j = (i + 1) % course.len();
+            if !needed[i] && !needed[j] {
+                continue;
+            }
+            let a = vec2(course[i].x, course[i].z);
+            let b = vec2(course[j].x, course[j].z);
+            let lo = a.min(b) - Vec2::splat(reach);
+            let hi = a.max(b) + Vec2::splat(reach);
+            let (x0, x1) = (
+                (lo.x / scale).clamp(0.0, max_cell) as usize,
+                (hi.x / scale).clamp(0.0, max_cell).ceil() as usize,
+            );
+            let (z0, z1) = (
+                (lo.y / scale).clamp(0.0, max_cell) as usize,
+                (hi.y / scale).clamp(0.0, max_cell).ceil() as usize,
+            );
+            let ab = b - a;
+            let len2 = ab.length_squared().max(1e-6);
+            for iz in z0..=z1.min(GRID - 1) {
+                for ix in x0..=x1.min(GRID - 1) {
+                    let p = vec2(ix as f32 * scale, iz as f32 * scale);
+                    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+                    let d = (p - (a + ab * t)).length();
+                    if d >= reach {
+                        continue;
+                    }
+                    let w = if d <= CAUSEWAY_RADIUS_M {
+                        1.0
+                    } else {
+                        let f = 1.0 - (d - CAUSEWAY_RADIUS_M) / CAUSEWAY_FALLOFF_M;
+                        f * f * (3.0 - 2.0 * f)
+                    };
+                    let cell = &mut self.heights[iz * GRID + ix];
+                    if *cell < target_units {
+                        let lift = (target_units - *cell) as f32 * w;
+                        *cell = (*cell as f32 + lift).round() as u16;
+                    }
+                }
+            }
+        }
+        count
     }
 
     /// Bilinear height at world coordinates. Outside the grid the edge value
@@ -893,10 +1028,140 @@ impl Track {
                 idx.extend_from_slice(&[base, base + 3, base + 1, base + 1, base + 3, base + 2]);
             }
         }
+        self.add_edge_blends(cx0, cz0, x1, z1, atlas, &lit, &mut verts, &mut idx);
         Mesh {
             vertices: verts,
             indices: idx,
             texture: Some(tex.clone()),
+        }
+    }
+
+    /// Soften the hard seams between ground tiles of different material.
+    ///
+    /// The retail ground is one texture per cell, so roads, tracks and rock
+    /// faces end in cell-sized steps. For every cell edge whose neighbour looks
+    /// clearly different (mean colour distance above `BLEND_MIN_DIFF`; plain
+    /// grass-to-grass variants are skipped), a translucent band along that edge
+    /// repeats the *neighbour's* tile, mirrored so its edge texels meet the
+    /// border. Both cells do this, so the border shows an even mix of the two
+    /// tiles and the mix fades out `BLEND_BAND` of a cell inwards.
+    ///
+    /// This does not read the `.TEX` `blend` column (its meaning is not
+    /// documented in the available sources); it is an approximation of the
+    /// original's edge compositing, not a port of it.
+    #[allow(clippy::too_many_arguments)]
+    fn add_edge_blends(
+        &self,
+        cx0: usize,
+        cz0: usize,
+        x1: usize,
+        z1: usize,
+        atlas: Atlas,
+        lit: &dyn Fn(usize, usize) -> [u8; 4],
+        verts: &mut Vec<Vertex>,
+        idx: &mut Vec<u16>,
+    ) {
+        const BLEND_BAND: f32 = 0.45;
+        const BLEND_ALPHA: f32 = 0.5;
+        const BLEND_MIN_DIFF: f32 = 0.10;
+        const LIFT_M: f32 = 0.06;
+        let ntex = self.textures.len().max(1);
+        let tile_at = |il: usize, iz: usize| {
+            (self.colors.get(iz * GRID + il).copied().unwrap_or(0) as usize).min(ntex - 1)
+        };
+        let differs = |a: usize, b: usize| {
+            if a == b {
+                return false;
+            }
+            match (self.ground_colors.get(a), self.ground_colors.get(b)) {
+                (Some(ca), Some(cb)) => {
+                    (ca.r - cb.r).abs() + (ca.g - cb.g).abs() + (ca.b - cb.b).abs() > BLEND_MIN_DIFF
+                }
+                _ => false,
+            }
+        };
+        let t = atlas.tile as f32;
+        // Atlas uv of tile `n` at local (a, b) in 0..=1, texel-centre inset as
+        // in the base quads.
+        let uv_of = |n: usize, a: f32, b: f32| {
+            let (col, row) = ((n % atlas.cols) as f32, (n / atlas.cols) as f32);
+            vec2(
+                (col * t + 0.5 + a * (t - 1.0)) / atlas.w,
+                (row * t + 0.5 + b * (t - 1.0)) / atlas.h,
+            )
+        };
+        // (neighbour dx, dz): band runs along that side of the cell.
+        const SIDES: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+        for iz in cz0..z1 {
+            for il in cx0..x1 {
+                let me = tile_at(il, iz);
+                for (dx, dz) in SIDES {
+                    let (nx, nz) = (il as i32 + dx, iz as i32 + dz);
+                    if nx < 0 || nz < 0 || nx as usize >= GRID - 1 || nz as usize >= GRID - 1 {
+                        continue;
+                    }
+                    let other = tile_at(nx as usize, nz as usize);
+                    if !differs(me, other) {
+                        continue;
+                    }
+                    if verts.len() + 4 > u16::MAX as usize {
+                        return;
+                    }
+                    // Band corners in cell-local (lx, lz): two on the shared
+                    // border (alpha on), two `BLEND_BAND` inwards (alpha off).
+                    let corners: [(f32, f32, bool); 4] = match (dx, dz) {
+                        (-1, 0) => [
+                            (0.0, 0.0, true),
+                            (0.0, 1.0, true),
+                            (BLEND_BAND, 1.0, false),
+                            (BLEND_BAND, 0.0, false),
+                        ],
+                        (1, 0) => [
+                            (1.0, 0.0, true),
+                            (1.0, 1.0, true),
+                            (1.0 - BLEND_BAND, 1.0, false),
+                            (1.0 - BLEND_BAND, 0.0, false),
+                        ],
+                        (0, -1) => [
+                            (0.0, 0.0, true),
+                            (1.0, 0.0, true),
+                            (1.0, BLEND_BAND, false),
+                            (0.0, BLEND_BAND, false),
+                        ],
+                        _ => [
+                            (0.0, 1.0, true),
+                            (1.0, 1.0, true),
+                            (1.0, 1.0 - BLEND_BAND, false),
+                            (0.0, 1.0 - BLEND_BAND, false),
+                        ],
+                    };
+                    let base = verts.len() as u16;
+                    for (lx, lz, on) in corners {
+                        let x = (il as f32 + lx) * self.scale;
+                        let z = (iz as f32 + lz) * self.scale;
+                        // Mirror across the shared border so the neighbour's
+                        // edge texels sit on it.
+                        let (a, b) = match (dx, dz) {
+                            (-1, 0) | (1, 0) => (1.0 - lx, lz),
+                            _ => (lx, 1.0 - lz),
+                        };
+                        // Shade like the nearest grid corner on the cell.
+                        let (cvx, cvz) = (
+                            if lx < 0.5 { il } else { il + 1 },
+                            if lz < 0.5 { iz } else { iz + 1 },
+                        );
+                        let mut color = lit(cvx, cvz);
+                        color[3] = if on { (BLEND_ALPHA * 255.0) as u8 } else { 0 };
+                        verts.push(Vertex {
+                            position: vec3(x, self.height_at(x, z) + LIFT_M, z),
+                            uv: uv_of(other, a, b),
+                            color,
+                            normal: Vec4::new(0.0, 1.0, 0.0, 0.0),
+                        });
+                    }
+                    idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                }
+            }
         }
     }
 
@@ -1476,6 +1741,288 @@ mod tests {
         assert!(t.height_at(10.0, 10.0) > 0.0);
         assert_eq!(t.height_at(-500.0, -500.0), 0.0);
         assert!(t.height_at(10_000.0, 10_000.0).is_finite());
+    }
+
+    /// Per-level water audit: depth of water at the start grid and along the
+    /// course gates / paths. `cargo test --release -p evox water_audit -- --ignored --nocapture`
+    /// Colour-word census: how many `.CLR` words exceed the texture list (they
+    /// would be clamped to the last texture) and which high bits they use.
+    /// How many cell edges would get an edge-blend band on retail levels.
+    #[test]
+    #[ignore]
+    fn blend_band_census() {
+        let root = [
+            "../assets/extracted/track/track",
+            "assets/extracted/track/track",
+        ]
+        .into_iter()
+        .map(std::path::Path::new)
+        .find(|p| p.join("LEVELS").exists())
+        .expect("extracted tracks");
+        for id in ["FM109", "CZ2000", "ELNORTE1", "ASPEN", "COSTRICA"] {
+            let t = Track::load(id, root).unwrap();
+            let ntex = t.textures.len().max(1);
+            let tile = |x: usize, z: usize| (t.colors[z * GRID + x] as usize).min(ntex - 1);
+            let (mut edges, mut differ, mut graycount) = (0usize, 0usize, 0usize);
+            for z in 0..GRID - 2 {
+                for x in 0..GRID - 2 {
+                    for (dx, dz) in [(1usize, 0usize), (0, 1)] {
+                        let (a, b) = (tile(x, z), tile(x + dx, z + dz));
+                        edges += 1;
+                        if a != b {
+                            differ += 1;
+                            if let (Some(ca), Some(cb)) =
+                                (t.ground_colors.get(a), t.ground_colors.get(b))
+                            {
+                                if (ca.r - cb.r).abs() + (ca.g - cb.g).abs() + (ca.b - cb.b).abs()
+                                    > 0.10
+                                {
+                                    graycount += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let uniq: std::collections::BTreeSet<(u32, u32, u32)> = t
+                .ground_colors
+                .iter()
+                .map(|c| {
+                    (
+                        (c.r * 100.0) as u32,
+                        (c.g * 100.0) as u32,
+                        (c.b * 100.0) as u32,
+                    )
+                })
+                .collect();
+            println!(
+                "{id}: unique ground colours {} first={:?}",
+                uniq.len(),
+                t.ground_colors.iter().take(3).collect::<Vec<_>>()
+            );
+            println!("{id}: edges {edges}, different tile {differ}, blended {graycount} ({:.1}% of edges), ground_colors={}", 100.0 * graycount as f32 / edges as f32, t.ground_colors.len());
+        }
+    }
+
+    /// Spawn grid vs course vs water for one level (`WATER_LEVEL=SKULL1`).
+    #[test]
+    #[ignore]
+    fn spawn_vs_course() {
+        let root = [
+            "../assets/extracted/track/track",
+            "assets/extracted/track/track",
+        ]
+        .into_iter()
+        .map(std::path::Path::new)
+        .find(|p| p.join("LEVELS").exists())
+        .expect("extracted tracks");
+        let id = std::env::var("WATER_LEVEL").unwrap_or("SKULL1".into());
+        let t = Track::load(&id, root).unwrap();
+        println!(
+            "water {:.1}  spawns {}  gates {}  paths {:?}",
+            t.water_height,
+            t.spawns.len(),
+            t.gates.len(),
+            t.paths.iter().map(|p| p.len()).collect::<Vec<_>>()
+        );
+        for s in t.spawns.iter().take(3) {
+            println!(
+                "spawn ({:.0},{:.0}) y={:.1} ground={:.1}",
+                s.pos.x,
+                s.pos.z,
+                s.pos.y,
+                t.height_at(s.pos.x, s.pos.z)
+            );
+        }
+        for g in t.gates.iter().take(12) {
+            let m = (g.start + g.end) * 0.5;
+            println!(
+                "gate ({:.0},{:.0}) ground={:.1}",
+                m.x,
+                m.z,
+                t.height_at(m.x, m.z)
+            );
+        }
+        for p in t.paths.iter().take(2) {
+            for q in p.iter().take(6) {
+                println!(
+                    "path ({:.0},{:.0}) y={:.1} ground={:.1}",
+                    q.x,
+                    q.z,
+                    q.y,
+                    t.height_at(q.x, q.z)
+                );
+            }
+        }
+        let mut hist = std::collections::BTreeMap::new();
+        for h in &t.heights {
+            *hist
+                .entry(((*h as f32 * HEIGHT_M_PER_UNIT) / 10.0) as i32 * 10)
+                .or_insert(0usize) += 1;
+        }
+        println!("height histogram (m): {:?}", hist);
+    }
+
+    /// Raw `*** Paths ***` height vs terrain: tells driveable splines from
+    /// boat/air paths that float on the water or above the ground.
+    #[test]
+    #[ignore]
+    fn path_height_audit() {
+        let root = [
+            "../assets/extracted/track/track",
+            "assets/extracted/track/track",
+        ]
+        .into_iter()
+        .map(std::path::Path::new)
+        .find(|p| p.join("LEVELS").exists())
+        .expect("extracted tracks");
+        let mut ids: Vec<String> = std::fs::read_dir(root.join("LEVELS"))
+            .unwrap()
+            .flatten()
+            .filter_map(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .strip_suffix(".LVL")
+                    .map(str::to_string)
+            })
+            .collect();
+        ids.sort();
+        for id in ids {
+            let Ok(t) = Track::load(&id, root) else {
+                continue;
+            };
+            for (k, p) in t.paths.iter().enumerate() {
+                if p.len() < 2 {
+                    continue;
+                }
+                let near = p
+                    .iter()
+                    .filter(|q| (q.y - t.height_at(q.x, q.z)).abs() <= 4.0)
+                    .count();
+                let at_water = p
+                    .iter()
+                    .filter(|q| t.water_height > 0.5 && (q.y - t.water_height).abs() <= 0.8)
+                    .count();
+                println!(
+                    "{id:9} path{k} pts={:3} on_ground={:3.0}% at_water_surface={:3.0}%",
+                    p.len(),
+                    100.0 * near as f32 / p.len() as f32,
+                    100.0 * at_water as f32 / p.len() as f32
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn clr_census() {
+        let root = [
+            "../assets/extracted/track/track",
+            "assets/extracted/track/track",
+        ]
+        .into_iter()
+        .map(std::path::Path::new)
+        .find(|p| p.join("LEVELS").exists())
+        .expect("extracted tracks");
+        let mut ids: Vec<String> = std::fs::read_dir(root.join("LEVELS"))
+            .unwrap()
+            .flatten()
+            .filter_map(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .strip_suffix(".LVL")
+                    .map(str::to_string)
+            })
+            .collect();
+        ids.sort();
+        for id in ids {
+            let Ok(t) = Track::load(&id, root) else {
+                continue;
+            };
+            let n = t.textures.len();
+            let over = t.colors.iter().filter(|c| **c as usize >= n).count();
+            let mx = t.colors.iter().copied().max().unwrap_or(0);
+            let mut hist = std::collections::BTreeMap::new();
+            for c in &t.colors {
+                *hist.entry(c >> 8).or_insert(0usize) += 1;
+            }
+            println!(
+                "{id:9} ntex={n:3} max={mx:5} over={:5.1}%  hi-byte hist={:?}",
+                100.0 * over as f32 / t.colors.len().max(1) as f32,
+                hist.iter().take(6).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn water_audit() {
+        let root = [
+            "../assets/extracted/track/track",
+            "assets/extracted/track/track",
+        ]
+        .into_iter()
+        .map(std::path::Path::new)
+        .find(|p| p.join("LEVELS").exists())
+        .expect("extracted tracks");
+        let mut ids: Vec<String> = std::fs::read_dir(root.join("LEVELS"))
+            .unwrap()
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.strip_suffix(".LVL").map(str::to_string)
+            })
+            .collect();
+        ids.sort();
+        println!(
+            "{:10} {:>7} {:>8} {:>8} {:>8} {:>6}",
+            "track", "water_m", "start_d", "route_n", "under%", "maxdep"
+        );
+        for id in ids {
+            let Ok(t) = Track::load(&id, root) else {
+                continue;
+            };
+            let depth = |x: f32, z: f32| (t.water_height - t.height_at(x, z)).max(0.0);
+            let sd = t
+                .spawns
+                .first()
+                .map(|s| depth(s.pos.x, s.pos.z))
+                .unwrap_or(f32::NAN);
+            let mut pts: Vec<Vec3> = t.gates.iter().map(|g| (g.start + g.end) * 0.5).collect();
+            if let Some(p) = t.paths.iter().max_by_key(|p| p.len()) {
+                pts.extend(p.iter().copied());
+            }
+            let n = pts.len();
+            let under = pts.iter().filter(|p| depth(p.x, p.z) > 0.0).count();
+            let maxd = pts.iter().map(|p| depth(p.x, p.z)).fold(0.0f32, f32::max);
+            let deep = pts.iter().filter(|p| depth(p.x, p.z) > 1.0).count();
+            if std::env::var("WATER_DETAIL").as_deref() == Ok(id.as_str()) {
+                for p in &pts {
+                    println!(
+                        "   pt ({:7.1},{:7.1}) y={:6.1} ground={:6.1} depth={:5.2}",
+                        p.x,
+                        p.z,
+                        p.y,
+                        t.height_at(p.x, p.z),
+                        depth(p.x, p.z)
+                    );
+                }
+            }
+            print!("deep>1m {:3}  ", deep);
+            println!(
+                "{:10} {:7.1} {:8.2} {:8} {:7.0}% {:6.2}",
+                id,
+                t.water_height,
+                sd,
+                n,
+                if n > 0 {
+                    100.0 * under as f32 / n as f32
+                } else {
+                    f32::NAN
+                },
+                maxd
+            );
+        }
     }
 
     #[test]

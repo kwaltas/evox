@@ -104,6 +104,8 @@ pub struct App {
     pub chunks: crate::terrain::ChunkCache,
     /// Off-screen bay for the garage turntable.
     pub garage_rt: Option<RenderTarget>,
+    /// First visible row of the touch menus' swipe lists.
+    pub touch_first: usize,
 }
 
 pub const START_BUDGET: i64 = 25_000;
@@ -160,8 +162,10 @@ impl App {
                 store.load_backup().unwrap_or_default()
             }
         };
-        audio.master = profile.settings.master_volume.clamp(0.0, 1.0);
-        audio.music_volume = profile.settings.music_volume.clamp(0.0, 1.0);
+        audio.set_levels(
+            profile.settings.master_volume.clamp(0.0, 1.0),
+            profile.settings.music_volume.clamp(0.0, 1.0),
+        );
         // Opening-movie soundtrack, when the movie has been converted. The
         // request is queued after the profile so `intro` starts at the saved
         // volume even though the decode finishes a few frames later.
@@ -268,6 +272,7 @@ impl App {
             render: Renderer::new(),
             chunks: crate::terrain::ChunkCache::new(),
             garage_rt: Some(render_target(420, 340)),
+            touch_first: 0,
         }
     }
 
@@ -336,7 +341,10 @@ impl App {
     }
 
     pub fn back(&mut self) {
-        if is_key_pressed(KeyCode::Escape) {
+        if is_key_pressed(KeyCode::Escape)
+            || (self.state == State::Race && crate::touch::pressed(crate::touch::Btn::Menu))
+            || (self.state != State::Race && crate::ui::take_back())
+        {
             self.audio.ui_back(get_time());
             match self.state {
                 State::Race => {
@@ -516,6 +524,8 @@ impl App {
                 self.toast = None;
             }
         }
+        crate::touch::update();
+        crate::ui::tick();
         self.back();
         self.sync_music();
         match self.state {
@@ -549,7 +559,7 @@ impl App {
                     return;
                 }
                 // H: the original's "Rescue", back on the course upright.
-                if is_key_pressed(KeyCode::H) {
+                if is_key_pressed(KeyCode::H) || crate::touch::pressed(crate::touch::Btn::Rescue) {
                     if let Some(r) = &mut self.race {
                         if r.phase == crate::race::Phase::Racing {
                             r.rescue_player();
@@ -557,7 +567,7 @@ impl App {
                     }
                 }
                 // 4 cycles the transfer case: 2WD, 4WD-HI, 4WD-LO (offroad4x4).
-                if is_key_pressed(KeyCode::Key4) {
+                if is_key_pressed(KeyCode::Key4) || crate::touch::pressed(crate::touch::Btn::Mode) {
                     if let Some(r) = &mut self.race {
                         r.drive_mode = (r.drive_mode + 1) % 3;
                     }
@@ -709,28 +719,42 @@ impl App {
 
     fn read_driving_input(&self) -> Input {
         Input {
-            throttle: if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
+            throttle: if is_key_down(KeyCode::W)
+                || is_key_down(KeyCode::Up)
+                || crate::touch::held(crate::touch::Btn::Gas)
+            {
                 1.0
             } else {
                 0.0
             },
-            brake: if is_key_down(KeyCode::S) || is_key_down(KeyCode::Down) {
+            brake: if is_key_down(KeyCode::S)
+                || is_key_down(KeyCode::Down)
+                || crate::touch::held(crate::touch::Btn::Brake)
+            {
                 1.0
             } else {
                 0.0
             },
-            steer: (if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
+            steer: (if is_key_down(KeyCode::D)
+                || is_key_down(KeyCode::Right)
+                || crate::touch::held(crate::touch::Btn::Right)
+            {
                 1.0
             } else {
                 0.0
-            }) - (if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
+            }) - (if is_key_down(KeyCode::A)
+                || is_key_down(KeyCode::Left)
+                || crate::touch::held(crate::touch::Btn::Left)
+            {
                 1.0
             } else {
                 0.0
             }),
-            handbrake: is_key_down(KeyCode::Space),
-            shift_up: is_key_pressed(KeyCode::E),
-            shift_down: is_key_pressed(KeyCode::Q),
+            handbrake: is_key_down(KeyCode::Space) || crate::touch::held(crate::touch::Btn::Hand),
+            shift_up: is_key_pressed(KeyCode::E)
+                || crate::touch::pressed(crate::touch::Btn::ShiftUp),
+            shift_down: is_key_pressed(KeyCode::Q)
+                || crate::touch::pressed(crate::touch::Btn::ShiftDown),
             drive_mode: self.race.as_ref().map_or(1, |r| r.drive_mode),
         }
     }
@@ -864,6 +888,15 @@ impl App {
 
     pub fn draw(&mut self) {
         clear_background(Color::new(0.02, 0.025, 0.035, 1.0));
+        // Menus are scaled for phones; the race view, editor and intro movie
+        // keep real pixels (they size themselves from the screen).
+        let scaled = !matches!(
+            self.state,
+            State::Race | State::Editor | State::BootSequence
+        );
+        if scaled {
+            crate::ui::begin_scaled();
+        }
         match self.state {
             State::BootSequence => screens::bootsequence(self),
             State::Boot => screens::boot(self),
@@ -877,7 +910,10 @@ impl App {
             State::Multiplayer => screens::multiplayer(self),
             State::Browser => screens::browser(self),
             State::Loading => screens::loading(self),
-            State::Race => screens::race(self),
+            State::Race => {
+                screens::race(self);
+                crate::touch::draw();
+            }
             State::Editor => screens::editor(self),
             State::Results => screens::results(self),
             State::Credits => screens::credits(self),
@@ -889,12 +925,20 @@ impl App {
             draw_rectangle(
                 0.0,
                 64.0,
-                screen_width(),
+                if scaled {
+                    crate::ui::vw()
+                } else {
+                    screen_width()
+                },
                 38.0,
                 Color::new(0.35, 0.12, 0.08, 0.85 * a),
             );
             self.ui.centered(
-                screen_width() * 0.5,
+                if scaled {
+                    crate::ui::vw()
+                } else {
+                    screen_width()
+                } * 0.5,
                 89.0,
                 20.0,
                 msg,
@@ -916,12 +960,19 @@ impl App {
             draw_rectangle(
                 0.0,
                 0.0,
-                screen_width(),
+                if scaled {
+                    crate::ui::vw()
+                } else {
+                    screen_width()
+                },
                 22.0,
                 Color::new(0.0, 0.0, 0.0, 0.6),
             );
             self.ui
                 .text(8.0, 16.0, 15.0, &s, Color::new(0.6, 1.0, 0.6, 1.0));
+        }
+        if scaled {
+            crate::ui::end_scaled();
         }
     }
 }
